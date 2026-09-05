@@ -1,42 +1,286 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation } from "wouter";
+import { toast } from "sonner";
+import {
+  Activity,
+  AlertCircle,
+  ArrowDownToLine,
+  ArrowLeft,
+  ArrowRight,
+  BarChart3,
+  Bell,
+  BookOpen,
+  Boxes,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  CircleHelp,
+  ClipboardList,
+  Cloud,
+  Command,
+  Copy,
+  Database,
+  FileClock,
+  FileText,
+  Filter,
+  FolderKanban,
+  Gauge,
+  Globe2,
+  Grid2X2,
+  HardDrive,
+  History,
+  KeyRound,
+  Laptop,
+  LayoutDashboard,
+  LifeBuoy,
+  ListFilter,
+  LockKeyhole,
+  Menu,
+  Moon,
+  MoreHorizontal,
+  Network,
+  PanelLeftClose,
+  Pause,
+  Play,
+  Plus,
+  RefreshCcw,
+  Search,
+  Settings,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Sun,
+  Target,
+  TerminalSquare,
+  TimerReset,
+  Trash2,
+  Upload,
+  UserRound,
+  Users,
+  WandSparkles,
+  X,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { StatusBadge, LiveDot } from "@/components/StatusBadge";
 import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
-import ErrorBoundary from "./components/ErrorBoundary";
-import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
+import { activity, auditEvents, discoveryUsers, errorRows, migrationJobs, mockCreateJob, mockGetOverview, overviewStats, statusBreakdown, throughputData, type MigrationJob } from "@/lib/mockApi";
 
+type NavItem = { label: string; icon: typeof LayoutDashboard; path: string; count?: string; section?: string };
 
-function Router() {
+const navItems: NavItem[] = [
+  { label: "Overview", icon: LayoutDashboard, path: "/" },
+  { label: "Migration jobs", icon: FolderKanban, path: "/jobs", count: "12" },
+  { label: "Discovery & mapping", icon: Network, path: "/discovery", count: "2.4k" },
+  { label: "Errors & remediation", icon: AlertCircle, path: "/errors", count: "47" },
+  { label: "Reports", icon: BarChart3, path: "/reports", section: "Governance" },
+  { label: "Audit log", icon: History, path: "/audit" },
+  { label: "Settings", icon: Settings, path: "/settings", section: "Workspace" },
+];
+
+const workloadOptions: Array<{ label: string; desc: string; icon: LucideIcon; enabled: boolean }> = [
+  { label: "OneDrive", desc: "Personal files and sites", icon: Cloud, enabled: true },
+  { label: "SharePoint", desc: "Sites and libraries", icon: FolderKanban, enabled: false },
+  { label: "Exchange", desc: "Mailboxes and calendars", icon: Database, enabled: false },
+];
+
+const pageMeta: Record<string, { eyebrow: string; title: string; description: string }> = {
+  overview: { eyebrow: "Operations center", title: "Good morning, Sarah", description: "Here's what is happening across your migration workspace." },
+  jobs: { eyebrow: "Migration operations", title: "Migration jobs", description: "Plan, run, and monitor your tenant-to-tenant workloads." },
+  discovery: { eyebrow: "Readiness workspace", title: "Discovery & mapping", description: "Resolve identities and validate workloads before you move." },
+  errors: { eyebrow: "Remediation queue", title: "Errors & remediation", description: "Triage exceptions and get blocked users moving again." },
+  reports: { eyebrow: "Governance", title: "Reports & analytics", description: "Turn migration telemetry into clear operational decisions." },
+  audit: { eyebrow: "Governance", title: "Audit log", description: "A tamper-evident record of workspace activity." },
+  settings: { eyebrow: "Workspace", title: "Settings", description: "Configure tenants, policies, notifications, and access." },
+};
+
+function classNames(...classes: Array<string | false | null | undefined>) { return classes.filter(Boolean).join(" "); }
+
+function App() {
+  const [location, navigate] = useLocation();
+  const [dark, setDark] = useState(true);
+  const [mobileNav, setMobileNav] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [jobWizardOpen, setJobWizardOpen] = useState(false);
+  const [live, setLive] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState("just now");
+
+  useEffect(() => { document.documentElement.classList.toggle("dark", dark); }, [dark]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setSearchOpen(true); }
+      if (event.key === "Escape") { setSearchOpen(false); setMobileNav(false); setJobWizardOpen(false); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => {
+    if (!live) return;
+    const timer = window.setInterval(() => setLastRefresh("a few seconds ago"), 15000);
+    return () => window.clearInterval(timer);
+  }, [live]);
+
+  const pageKey = location === "/" ? "overview" : location.replace(/^\//, "").split("/")[0] || "overview";
+  const meta = pageMeta[pageKey] ?? pageMeta.overview;
+  const go = (path: string) => { navigate(path); setMobileNav(false); };
+
   return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
+    <div className="app-shell flex min-h-screen">
+      <Toaster position="bottom-right" />
+      <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} mobileNav={mobileNav} go={go} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Topbar meta={meta} dark={dark} setDark={setDark} setMobileNav={setMobileNav} setSearchOpen={setSearchOpen} />
+        <main className="subtle-scrollbar min-h-0 flex-1 overflow-auto">
+          <div className="mx-auto max-w-[1500px] p-4 sm:p-6 xl:p-8">
+            <PageHeader meta={meta} pageKey={pageKey} go={go} setJobWizardOpen={setJobWizardOpen} />
+            {pageKey === "overview" && <Dashboard onNewJob={() => setJobWizardOpen(true)} onRefresh={() => { setLastRefresh("just now"); toast.success("Workspace data refreshed"); }} />}
+            {pageKey === "jobs" && <JobsPage onNewJob={() => setJobWizardOpen(true)} />}
+            {pageKey === "discovery" && <DiscoveryPage />}
+            {pageKey === "errors" && <ErrorsPage />}
+            {pageKey === "reports" && <ReportsPage />}
+            {pageKey === "audit" && <AuditPage />}
+            {pageKey === "settings" && <SettingsPage />}
+          </div>
+        </main>
+        <div className="border-t border-border/70 bg-card/70 px-4 py-2 text-[11px] text-muted-foreground sm:px-6 xl:px-8">
+          <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-3"><span>Porterline Migration Console <span className="opacity-50">·</span> v2.8.4</span><span className="hidden sm:inline">Last data refresh: {lastRefresh} <span className="mx-1 opacity-50">·</span> <button onClick={() => setLive(!live)} className="font-semibold text-teal-400 hover:text-teal-300">{live ? "Polling active" : "Polling paused"}</button></span></div>
+        </div>
+      </div>
+      {searchOpen && <CommandPalette close={() => setSearchOpen(false)} go={go} />}
+      {jobWizardOpen && <JobWizard close={() => setJobWizardOpen(false)} />}
+      <button aria-label="Open navigation" onClick={() => setMobileNav(true)} className="mobile-only fixed bottom-5 left-5 z-30 h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl"><Menu size={20} /></button>
+    </div>
   );
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
+function Sidebar({ collapsed, setCollapsed, mobileNav, go }: { collapsed: boolean; setCollapsed: (v: boolean) => void; mobileNav: boolean; go: (path: string) => void }) {
+  const [location] = useLocation();
+  const activePath = location === "/" ? "/" : `/${location.split("/")[1]}`;
+  return <>
+    <aside className={classNames("desktop-sidebar sidebar-surface sticky top-0 z-20 flex h-screen shrink-0 flex-col border-r border-[#24405f] text-sidebar-foreground transition-[width,transform] duration-200", collapsed ? "w-[76px]" : "w-[252px]", mobileNav && "max-sm:fixed max-sm:left-0 max-sm:top-0 max-sm:flex max-sm:w-[252px] max-sm:shadow-2xl")}>
+      <div className="flex h-[76px] items-center gap-3 border-b border-sidebar-border px-5">
+        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#64e1dc] to-[#2993cd] text-[#072c39] shadow-lg shadow-cyan-950/30"><Zap size={18} fill="currentColor" /></div>
+        <div className="brand-copy min-w-0"><div className="font-['Space_Grotesk'] text-[15px] font-bold tracking-tight">Porterline</div><div className="truncate text-[10px] font-medium uppercase tracking-[.15em] text-slate-400">Migration console</div></div>
+        <button onClick={() => setCollapsed(!collapsed)} className="ml-auto hidden rounded-md p-1.5 text-slate-400 hover:bg-white/10 hover:text-white lg:block" aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>{collapsed ? <ChevronRight size={16} /> : <PanelLeftClose size={16} />}</button>
+      </div>
+      <div className="workspace-copy border-b border-sidebar-border px-5 py-5"><div className="mb-2 flex items-center justify-between"><span className="text-[10px] font-bold uppercase tracking-[.16em] text-slate-500">Workspace</span><ChevronDown size={13} className="text-slate-500" /></div><div className="flex items-center gap-2.5"><div className="grid h-7 w-7 place-items-center rounded-lg bg-[#214565] text-[11px] font-bold text-cyan-200">NW</div><div className="min-w-0"><div className="truncate text-sm font-semibold">Northwind · Global</div><div className="truncate text-[11px] text-slate-400">Enterprise plan</div></div></div></div>
+      <nav className="subtle-scrollbar flex-1 overflow-y-auto px-3 py-5" aria-label="Primary navigation">
+        {navItems.map((item, index) => { const Icon = item.icon; const active = activePath === item.path; return <div key={item.path}>{item.section && <div className="nav-label mb-2 mt-5 px-3 text-[10px] font-bold uppercase tracking-[.16em] text-slate-500">{item.section}</div>}<button onClick={() => go(item.path)} className={classNames("nav-item group mb-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium transition-colors", active ? "bg-sidebar-accent text-white shadow-sm" : "text-slate-400 hover:bg-white/6 hover:text-slate-100")}><Icon size={17} strokeWidth={active ? 2.2 : 1.8} className={active ? "text-sidebar-primary" : "text-slate-500 group-hover:text-slate-300"} /><span className="nav-label flex-1">{item.label}</span>{item.count && <span className={classNames("nav-count rounded-md px-1.5 py-0.5 text-[10px] font-bold", active ? "bg-cyan-300/15 text-cyan-200" : "bg-white/7 text-slate-500")}>{item.count}</span>}</button>{index === 0 && <div className="my-4 border-t border-sidebar-border" />}</div> })}
+        <div className="nav-label mb-2 mt-7 px-3 text-[10px] font-bold uppercase tracking-[.16em] text-slate-500">Help & resources</div>
+        <button onClick={() => toast.info("Help center is opening in a new tab in the full product.")} className="nav-item group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-slate-400 hover:bg-white/6 hover:text-slate-100"><LifeBuoy size={17} className="text-slate-500 group-hover:text-slate-300" /><span className="nav-label">Help center</span></button>
+        <button onClick={() => toast.info("API docs are available to workspace admins.")} className="nav-item group mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-[13px] font-medium text-slate-400 hover:bg-white/6 hover:text-slate-100"><BookOpen size={17} className="text-slate-500 group-hover:text-slate-300" /><span className="nav-label">API reference</span></button>
+      </nav>
+      <div className="sidebar-footer-copy border-t border-sidebar-border p-4"><div className="rounded-xl border border-cyan-200/10 bg-cyan-200/5 p-3"><div className="mb-2 flex items-center gap-2 text-xs font-semibold text-cyan-100"><Sparkles size={14} className="text-cyan-300" /> Migration health</div><div className="mb-2 flex items-center justify-between text-[11px] text-slate-400"><span>Workspace readiness</span><span className="font-bold text-cyan-200">94%</span></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-700"><div className="h-full w-[94%] rounded-full bg-gradient-to-r from-cyan-400 to-blue-400" /></div></div></div>
+    </aside>
+    {mobileNav && <button aria-label="Close navigation" onClick={() => go("/")} className="fixed inset-0 z-10 bg-slate-950/70 sm:hidden" />}
+  </>;
+}
 
-function App() {
-  return (
-    <ErrorBoundary>
-      <ThemeProvider
-        defaultTheme="light"
-        // switchable
-      >
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
-      </ThemeProvider>
-    </ErrorBoundary>
-  );
+function Topbar({ meta, dark, setDark, setMobileNav, setSearchOpen }: { meta: { eyebrow: string; title: string; description: string }; dark: boolean; setDark: (v: boolean) => void; setMobileNav: (v: boolean) => void; setSearchOpen: (v: boolean) => void }) {
+  return <header className="sticky top-0 z-10 border-b border-border/80 bg-background/88 backdrop-blur-xl"><div className="flex h-[76px] items-center justify-between gap-4 px-4 sm:px-6 xl:px-8"><div className="flex min-w-0 items-center gap-3"><button className="mobile-only rounded-lg border border-border bg-card p-2 text-muted-foreground" onClick={() => setMobileNav(true)} aria-label="Open navigation"><Menu size={18} /></button><div className="min-w-0"><div className="eyebrow mb-1">{meta.eyebrow}</div><div className="hidden truncate font-['Space_Grotesk'] text-xl font-bold tracking-tight text-foreground sm:block">{meta.title}</div></div></div><div className="flex items-center gap-2"><button onClick={() => setSearchOpen(true)} className="group flex h-9 items-center gap-2 rounded-lg border border-border bg-card px-3 text-muted-foreground shadow-sm transition hover:border-primary/50 hover:text-foreground"><Search size={15} /><span className="hidden text-xs sm:inline">Search workspace</span><kbd className="hidden rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground lg:inline">⌘ K</kbd></button><div className="hidden h-5 w-px bg-border sm:block" /><button onClick={() => toast.info("No new notifications")} className="relative grid h-9 w-9 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Notifications"><Bell size={17} /><span className="absolute right-2 top-1.5 h-1.5 w-1.5 rounded-full bg-amber-400" /></button><button onClick={() => setDark(!dark)} className="grid h-9 w-9 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Toggle theme">{dark ? <Sun size={17} /> : <Moon size={17} />}</button><div className="ml-1 hidden h-8 w-px bg-border sm:block" /><button onClick={() => toast.info("Account menu coming soon")} className="hidden items-center gap-2 rounded-lg p-1.5 pr-2 text-left hover:bg-muted sm:flex"><div className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-violet-400 to-blue-500 text-[10px] font-bold text-white">SP</div><div className="hidden xl:block"><div className="text-xs font-bold leading-none">Sarah Patel</div><div className="mt-1 text-[10px] text-muted-foreground">Admin</div></div><ChevronDown size={13} className="text-muted-foreground" /></button></div></div></header>;
+}
+
+function PageHeader({ meta, pageKey, go, setJobWizardOpen }: { meta: { eyebrow: string; title: string; description: string }; pageKey: string; go: (path: string) => void; setJobWizardOpen: (v: boolean) => void }) {
+  return <div className="mb-7 flex flex-col justify-between gap-5 lg:flex-row lg:items-end"><div><div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground"><span>Workspace</span><ChevronRight size={13} /><span className="text-foreground">{meta.eyebrow}</span></div><h1 className="font-['Space_Grotesk'] text-2xl font-bold tracking-[-.04em] text-foreground sm:text-[30px]">{meta.title}</h1><p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">{meta.description}</p></div><div className="flex shrink-0 items-center gap-2">{pageKey === "overview" && <button onClick={() => toast.info("Documentation is available in the Help center")} className="hidden items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2.5 text-xs font-semibold text-foreground shadow-sm hover:bg-muted sm:flex"><CircleHelp size={15} />View docs</button>}{pageKey === "jobs" && <button onClick={() => setJobWizardOpen(true)} className="flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-xs font-bold text-primary-foreground shadow-lg shadow-primary/15 transition hover:brightness-110"><Plus size={15} />New migration job</button>}{pageKey === "discovery" && <button onClick={() => toast.success("Discovery scan queued", { description: "The scan will begin in the next polling cycle." })} className="flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-xs font-bold text-primary-foreground shadow-lg shadow-primary/15 transition hover:brightness-110"><RefreshCcw size={15} />Run discovery scan</button>}{pageKey === "errors" && <button onClick={() => toast.success("Error report export started")} className="flex items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2.5 text-xs font-semibold shadow-sm hover:bg-muted"><ArrowDownToLine size={15} />Export report</button>}{pageKey === "reports" && <button onClick={() => toast.success("Report generation started")} className="flex items-center gap-2 rounded-lg bg-primary px-3.5 py-2.5 text-xs font-bold text-primary-foreground shadow-lg shadow-primary/15"><Plus size={15} />Create report</button>}</div></div>;
+}
+
+function Dashboard({ onNewJob, onRefresh }: { onNewJob: () => void; onRefresh: () => void }) {
+  const [activeJobs, setActiveJobs] = useState(12);
+  useEffect(() => { mockGetOverview().then((data) => setActiveJobs(data.activeJobs)); }, []);
+  return <div className="space-y-5">
+    <div className="reveal grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{overviewStats.map((stat, i) => <MetricCard key={stat.label} {...stat} index={i} />)}</div>
+    <div className="reveal reveal-delay-1 grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,.9fr)]">
+      <div className="console-card min-w-0 overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><div className="flex items-center gap-2"><h2 className="font-['Space_Grotesk'] text-sm font-bold">Migration throughput</h2><LiveDot /></div><p className="mt-1 text-xs text-muted-foreground">Items processed and discovered · last 12 hours</p></div><div className="flex items-center gap-1 rounded-lg bg-muted p-1 text-[11px] font-semibold"><button className="rounded-md bg-card px-2.5 py-1.5 text-foreground shadow-sm">12 hours</button><button className="px-2.5 py-1.5 text-muted-foreground">7 days</button></div></div><div className="h-[270px] w-full p-3 pt-5 sm:p-5"><ResponsiveContainer width="100%" height="100%"><AreaChart data={throughputData} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}><defs><linearGradient id="migrated" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#54c8cf" stopOpacity={.38} /><stop offset="95%" stopColor="#54c8cf" stopOpacity={0} /></linearGradient><linearGradient id="discovered" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#4f9af2" stopOpacity={.22} /><stop offset="95%" stopColor="#4f9af2" stopOpacity={0} /></linearGradient></defs><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(130, 149, 178, .16)" /><XAxis dataKey="time" tick={{ fill: "#8295b2", fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fill: "#8295b2", fontSize: 11 }} axisLine={false} tickLine={false} /><Tooltip /><Area type="monotone" dataKey="migrated" stroke="#54c8cf" strokeWidth={2.5} fill="url(#migrated)" name="Migrated (k)" /><Area type="monotone" dataKey="discovered" stroke="#4f9af2" strokeWidth={2} strokeDasharray="4 4" fill="url(#discovered)" name="Discovered (k)" /></AreaChart></ResponsiveContainer></div><div className="flex items-center gap-5 border-t border-border px-5 py-3 text-[11px] text-muted-foreground"><span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-[#54c8cf]" />Migrated</span><span className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-[#4f9af2]" />Discovered</span><span className="ml-auto hidden sm:inline">Peak throughput <b className="text-foreground">142k items/hr</b></span></div></div>
+      <div className="console-card overflow-hidden"><div className="flex items-start justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Migration health</h2><p className="mt-1 text-xs text-muted-foreground">All active workloads</p></div><button onClick={() => toast.info("Opening detailed health report")} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"><MoreHorizontal size={17} /></button></div><div className="flex items-center gap-5 px-5 py-5"><div className="h-[150px] w-[150px] shrink-0"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={statusBreakdown} dataKey="value" nameKey="name" innerRadius={47} outerRadius={68} paddingAngle={3} stroke="none">{statusBreakdown.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Pie><text x="50%" y="48%" textAnchor="middle" dominantBaseline="middle" fill="currentColor" fontSize="26" fontWeight="700">{activeJobs}</text><text x="50%" y="63%" textAnchor="middle" dominantBaseline="middle" fill="#8295b2" fontSize="10">active jobs</text></PieChart></ResponsiveContainer></div><div className="min-w-0 flex-1 space-y-3">{statusBreakdown.map((entry) => <div key={entry.name} className="flex items-center justify-between gap-3 text-xs"><span className="flex min-w-0 items-center gap-2 text-muted-foreground"><span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: entry.color }} />{entry.name}</span><span className="font-bold tabular-nums text-foreground">{entry.value}%</span></div>)}</div></div><div className="mx-5 mb-5 rounded-lg border border-amber-300/15 bg-amber-300/5 p-3"><div className="flex items-start gap-2.5"><AlertCircle size={15} className="mt-0.5 shrink-0 text-amber-300" /><div><div className="text-xs font-bold text-amber-100">3 jobs need attention</div><div className="mt-0.5 text-[11px] leading-relaxed text-amber-100/60">Resolve 47 exceptions to keep the migration plan on schedule.</div></div></div></div></div>
+    </div>
+    <div className="reveal reveal-delay-2 grid gap-5 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,.9fr)]">
+      <JobsTable compact onNewJob={onNewJob} />
+      <ActivityCard onRefresh={onRefresh} />
+    </div>
+  </div>;
+}
+
+function MetricCard({ label, value, detail, tone, index }: { label: string; value: string; detail: string; tone: string; index: number }) {
+  const accents: Record<string, string> = { cyan: "text-teal-300 bg-teal-400/10", blue: "text-blue-300 bg-blue-400/10", violet: "text-violet-300 bg-violet-400/10", amber: "text-amber-300 bg-amber-400/10" };
+  const icons = [Users, HardDrive, Database, Activity]; const Icon = icons[index];
+  return <div className={`console-card reveal reveal-delay-${Math.min(index, 3)} p-4 sm:p-5`}><div className="flex items-start justify-between"><span className="text-xs font-semibold text-muted-foreground">{label}</span><span className={classNames("grid h-8 w-8 place-items-center rounded-lg", accents[tone])}><Icon size={15} /></span></div><div className="metric-number mt-4 font-['Space_Grotesk'] text-3xl font-bold text-foreground">{value}</div><div className="mt-2 flex items-center gap-1.5 text-[11px] font-semibold text-teal-300"><ArrowRight size={12} />{detail}</div></div>;
+}
+
+function JobsTable({ compact = false, onNewJob }: { compact?: boolean; onNewJob?: () => void }) {
+  const visible = compact ? migrationJobs.slice(0, 4) : migrationJobs;
+  return <div className="console-card overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Active migration jobs</h2><p className="mt-1 text-xs text-muted-foreground">Latest workload progress across your tenants</p></div>{compact ? <Link href="/jobs" className="flex items-center gap-1 text-[11px] font-bold text-primary hover:underline">View all <ChevronRight size={13} /></Link> : <div className="flex items-center gap-2"><button className="grid h-8 w-8 place-items-center rounded-lg border border-border text-muted-foreground hover:bg-muted"><Filter size={14} /></button><button onClick={() => toast.info("Bulk actions are available when jobs are selected")} className="grid h-8 w-8 place-items-center rounded-lg border border-border text-muted-foreground hover:bg-muted"><MoreHorizontal size={14} /></button></div>}</div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead className="bg-muted/50 text-[10px] font-bold uppercase tracking-[.12em] text-muted-foreground"><tr><th className="px-5 py-3">Job</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Progress</th><th className="px-3 py-3">Throughput</th><th className="px-3 py-3">ETA</th><th className="px-5 py-3 text-right"> </th></tr></thead><tbody className="divide-y divide-border/70">{visible.map((job) => <JobRow key={job.id} job={job} />)}</tbody></table></div>{!compact && <div className="flex items-center justify-between border-t border-border px-5 py-3 text-[11px] text-muted-foreground"><span>Showing 5 of 12 jobs</span><div className="flex items-center gap-1"><button className="rounded-md border border-border px-2 py-1 hover:bg-muted">Previous</button><button className="rounded-md border border-border bg-muted px-2 py-1 font-bold text-foreground">1</button><button className="rounded-md border border-border px-2 py-1 hover:bg-muted">2</button><button className="rounded-md border border-border px-2 py-1 hover:bg-muted">Next</button></div></div>}</div>;
+}
+
+function JobRow({ job }: { job: MigrationJob }) {
+  return <tr className="data-row"><td className="px-5 py-3.5"><div className="flex items-center gap-3"><div className="grid h-8 w-8 place-items-center rounded-lg bg-blue-400/10 text-blue-300"><Cloud size={15} /></div><div><div className="text-xs font-bold text-foreground">{job.name}</div><div className="mt-1 text-[10px] text-muted-foreground">{job.id} <span className="mx-1 opacity-50">·</span> {job.workload}</div></div></div></td><td className="px-3 py-3.5"><StatusBadge status={job.status} /></td><td className="px-3 py-3.5"><div className="w-32"><div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold"><span className="text-foreground">{job.progress}%</span><span className="text-muted-foreground">{job.items.split("/")[0].trim()}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={classNames("h-full rounded-full", job.status === "Needs review" ? "bg-amber-400" : "bg-gradient-to-r from-cyan-400 to-blue-400")} style={{ width: `${job.progress}%` }} /></div></div></td><td className="px-3 py-3.5 text-xs font-semibold text-muted-foreground">{job.throughput}</td><td className="px-3 py-3.5 text-xs text-muted-foreground">{job.eta}</td><td className="px-5 py-3.5 text-right"><button onClick={() => toast.info(`Opening ${job.id}`)} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`Open ${job.name}`}><ChevronRight size={16} /></button></td></tr>;
+}
+
+function ActivityCard({ onRefresh }: { onRefresh: () => void }) {
+  return <div className="console-card overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Recent activity</h2><p className="mt-1 text-xs text-muted-foreground">Live workspace events</p></div><button onClick={onRefresh} className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Refresh activity"><RefreshCcw size={14} /></button></div><div className="divide-y divide-border/70">{activity.map((item) => <div key={item.title} className="flex gap-3 px-5 py-4"><div className={classNames("mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full", item.type === "success" ? "bg-teal-400/10 text-teal-300" : item.type === "warning" ? "bg-amber-400/10 text-amber-300" : item.type === "error" ? "bg-rose-400/10 text-rose-300" : "bg-blue-400/10 text-blue-300")}>{item.type === "success" ? <CheckCircle2 size={14} /> : item.type === "warning" ? <AlertCircle size={14} /> : item.type === "error" ? <AlertCircle size={14} /> : <Activity size={14} />}</div><div className="min-w-0"><div className="text-xs font-semibold text-foreground">{item.title}</div><div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{item.detail}</div></div></div>)}</div><button onClick={() => toast.info("Activity history is available in the Audit log")} className="flex w-full items-center justify-center gap-1.5 border-t border-border py-3 text-[11px] font-bold text-primary hover:bg-muted">View activity log <ArrowRight size={13} /></button></div>;
+}
+
+function JobsPage({ onNewJob }: { onNewJob: () => void }) {
+  const [filter, setFilter] = useState("All jobs");
+  const filtered = filter === "All jobs" ? migrationJobs : migrationJobs.filter((j) => j.status === filter);
+  return <div className="space-y-5"><div className="console-card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:border-ring sm:w-64" placeholder="Search jobs" /></div><select value={filter} onChange={(e) => setFilter(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none focus:border-ring"><option>All jobs</option><option>Running</option><option>Completed</option><option>Needs review</option><option>Queued</option></select></div><div className="flex items-center gap-2 text-[11px] text-muted-foreground"><span className="hidden sm:inline">12 total jobs</span><button onClick={onNewJob} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 font-bold text-primary-foreground"><Plus size={14} />New job</button></div></div><JobsTable compact={false} onNewJob={onNewJob} /><div className="hidden">{filtered.length}</div></div>;
+}
+
+function DiscoveryPage() {
+  const [tab, setTab] = useState("Users");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
+  const rows = discoveryUsers.filter((u) => `${u.name} ${u.email} ${u.source}`.toLowerCase().includes(query.toLowerCase()));
+  const toggle = (email: string) => setSelected((current) => current.includes(email) ? current.filter((x) => x !== email) : [...current, email]);
+  return <div className="space-y-5"><div className="grid gap-4 sm:grid-cols-3"><MiniStat label="Source identities" value="2,418" detail="Across 3 tenants" icon={Users} /><MiniStat label="Mapped" value="2,286" detail="94.5% ready" icon={CheckCircle2} tone="teal" /><MiniStat label="Needs attention" value="132" detail="12 conflicts" icon={AlertCircle} tone="amber" /></div><div className="console-card overflow-hidden"><div className="flex flex-col justify-between gap-3 border-b border-border px-5 py-4 lg:flex-row lg:items-center"><div className="flex items-center gap-1 rounded-lg bg-muted p-1">{["Users", "Workloads", "Mapping rules"].map((item) => <button key={item} onClick={() => setTab(item)} className={classNames("rounded-md px-3 py-1.5 text-xs font-bold", tab === item ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>{item}</button>)}</div><div className="flex items-center gap-2"><div className="relative flex-1"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input value={query} onChange={(e) => setQuery(e.target.value)} className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-xs outline-none focus:border-ring lg:w-64" placeholder="Search identities" /></div><button className="grid h-9 w-9 place-items-center rounded-lg border border-border text-muted-foreground hover:bg-muted"><ListFilter size={14} /></button></div></div>{tab === "Users" ? <><div className="flex items-center justify-between border-b border-border bg-muted/30 px-5 py-2.5 text-[11px] text-muted-foreground"><span>{selected.length ? `${selected.length} selected` : "Showing 6 of 2,418 identities"}</span><div className="flex items-center gap-2"><button onClick={() => toast.success("Mapping rules applied", { description: `${selected.length || "Selected"} identities queued for validation.` })} className="font-semibold text-primary hover:underline">Apply mapping rule</button><span className="opacity-30">·</span><button onClick={() => setSelected([])} className="font-semibold hover:text-foreground">Clear</button></div></div><div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-muted/40 text-[10px] font-bold uppercase tracking-[.12em] text-muted-foreground"><tr><th className="w-10 px-5 py-3"><input type="checkbox" aria-label="Select all" checked={selected.length === rows.length && rows.length > 0} onChange={() => setSelected(selected.length === rows.length ? [] : rows.map((u) => u.email))} /></th><th className="px-3 py-3">Source identity</th><th className="px-3 py-3">Target identity</th><th className="px-3 py-3">Workloads</th><th className="px-3 py-3">Status</th><th className="px-5 py-3">Risk</th></tr></thead><tbody className="divide-y divide-border/70">{rows.map((user) => <tr key={user.email} className="data-row"><td className="px-5 py-3.5"><input type="checkbox" aria-label={`Select ${user.name}`} checked={selected.includes(user.email)} onChange={() => toggle(user.email)} /></td><td className="px-3 py-3.5"><div className="flex items-center gap-2.5"><div className="grid h-8 w-8 place-items-center rounded-full bg-violet-400/15 text-[10px] font-bold text-violet-300">{user.initials}</div><div><div className="text-xs font-bold">{user.name}</div><div className="mt-1 text-[10px] text-muted-foreground">{user.email} <span className="mx-1 opacity-40">·</span> {user.source}</div></div></div></td><td className="px-3 py-3.5 text-xs font-medium text-muted-foreground">{user.target}</td><td className="px-3 py-3.5 text-[11px] font-medium text-muted-foreground">{user.workload}</td><td className="px-3 py-3.5"><StatusBadge status={user.status} /></td><td className="px-5 py-3.5"><StatusBadge status={user.risk} /></td></tr>)}</tbody></table></div><div className="flex items-center justify-between border-t border-border px-5 py-3 text-[11px] text-muted-foreground"><span>Last scan completed 44 min ago</span><button onClick={() => toast.success("CSV template downloaded")} className="flex items-center gap-1.5 font-semibold text-primary"><ArrowDownToLine size={13} />Download mapping template</button></div></> : <PlaceholderPanel tab={tab} />}</div></div>;
+}
+
+function ErrorsPage() {
+  const [severity, setSeverity] = useState("All severities");
+  const filtered = severity === "All severities" ? errorRows : errorRows.filter((r) => r.severity === severity);
+  return <div className="space-y-5"><div className="grid gap-4 sm:grid-cols-4"><MiniStat label="Open exceptions" value="47" detail="Across 4 jobs" icon={AlertCircle} tone="rose" /><MiniStat label="High severity" value="6" detail="Needs action now" icon={ShieldCheck} tone="rose" /><MiniStat label="Auto-retry ready" value="28" detail="Can be replayed" icon={RefreshCcw} tone="blue" /><MiniStat label="Resolved today" value="19" detail="+6 vs yesterday" icon={CheckCircle2} tone="teal" /></div><div className="console-card overflow-hidden"><div className="flex flex-col justify-between gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Exception queue</h2><p className="mt-1 text-xs text-muted-foreground">Prioritized by severity and operational impact</p></div><div className="flex items-center gap-2"><select value={severity} onChange={(e) => setSeverity(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none"><option>All severities</option><option>High</option><option>Medium</option><option>Low</option></select><button onClick={() => toast.success("Auto-remediation started", { description: "28 retry-safe items have been queued." })} className="flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-bold text-primary-foreground"><WandSparkles size={14} />Auto-remediate</button></div></div><div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left"><thead className="bg-muted/40 text-[10px] font-bold uppercase tracking-[.12em] text-muted-foreground"><tr><th className="px-5 py-3">Exception</th><th className="px-3 py-3">Entity</th><th className="px-3 py-3">Job</th><th className="px-3 py-3">Severity</th><th className="px-3 py-3">Last seen</th><th className="px-5 py-3 text-right">Remediation</th></tr></thead><tbody className="divide-y divide-border/70">{filtered.map((row) => <tr key={row.code} className="data-row"><td className="px-5 py-4"><div className="flex items-start gap-3"><div className={classNames("mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg", row.severity === "High" ? "bg-rose-400/10 text-rose-300" : row.severity === "Medium" ? "bg-amber-400/10 text-amber-300" : "bg-slate-400/10 text-slate-300")}><AlertCircle size={14} /></div><div><div className="font-mono text-[11px] font-bold text-primary">{row.code}</div><div className="mt-1 max-w-[360px] text-xs font-semibold leading-relaxed">{row.message}</div></div></div></td><td className="px-3 py-4 text-xs text-muted-foreground">{row.entity}</td><td className="px-3 py-4 font-mono text-[11px] text-muted-foreground">{row.job}</td><td className="px-3 py-4"><StatusBadge status={row.severity} /></td><td className="px-3 py-4 text-xs text-muted-foreground">{row.lastSeen}</td><td className="px-5 py-4 text-right"><button onClick={() => toast.success(`${row.action} queued`, { description: row.entity })} className="rounded-lg border border-border bg-card px-2.5 py-1.5 text-[11px] font-bold hover:bg-muted">{row.action}</button></td></tr>)}</tbody></table></div></div></div>;
+}
+
+function ReportsPage() {
+  const reports = [{ name: "Weekly executive summary", scope: "All workloads", cadence: "Every Monday", owner: "Sarah Patel", updated: "Today, 07:15" }, { name: "OneDrive readiness report", scope: "OneDrive · Global", cadence: "On demand", owner: "Jordan Martin", updated: "Yesterday" }, { name: "Exception aging analysis", scope: "Open exceptions", cadence: "Daily", owner: "System", updated: "Today, 06:00" }];
+  return <div className="space-y-5"><div className="grid gap-5 lg:grid-cols-[1.2fr_.8fr]"><div className="console-card overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Executive snapshot</h2><p className="mt-1 text-xs text-muted-foreground">Migration progress by workload</p></div><button onClick={() => toast.success("Snapshot exported as PDF")} className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-2 text-[11px] font-bold hover:bg-muted"><ArrowDownToLine size={13} />Export</button></div><div className="h-[260px] p-5"><ResponsiveContainer width="100%" height="100%"><AreaChart data={throughputData}><defs><linearGradient id="reportFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a685f5" stopOpacity={.35} /><stop offset="100%" stopColor="#a685f5" stopOpacity={0} /></linearGradient></defs><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(130,149,178,.16)" /><XAxis dataKey="time" tick={{ fill: "#8295b2", fontSize: 11 }} axisLine={false} tickLine={false} /><YAxis tick={{ fill: "#8295b2", fontSize: 11 }} axisLine={false} tickLine={false} /><Tooltip /><Area type="monotone" dataKey="discovered" stroke="#a685f5" fill="url(#reportFill)" strokeWidth={2.5} name="Items in scope" /></AreaChart></ResponsiveContainer></div></div><div className="console-card p-5"><div className="flex items-center gap-3"><div className="grid h-10 w-10 place-items-center rounded-xl bg-violet-400/10 text-violet-300"><Target size={19} /></div><div><div className="eyebrow">Program health</div><div className="mt-1 font-['Space_Grotesk'] text-2xl font-bold">On track</div></div></div><div className="mt-6 space-y-4">{[["Migration completion", "84.6%", 84.6, "bg-teal-400"], ["Mapping readiness", "94.5%", 94.5, "bg-blue-400"], ["Exception resolution", "71.0%", 71, "bg-amber-400"]].map(([label, value, width, color]) => <div key={String(label)}><div className="mb-2 flex justify-between text-xs"><span className="font-semibold text-muted-foreground">{label}</span><span className="font-bold text-foreground">{value}</span></div><div className="h-2 rounded-full bg-muted"><div className={classNames("h-full rounded-full", String(color))} style={{ width: `${Number(width)}%` }} /></div></div>)}</div><div className="mt-6 flex items-start gap-2 rounded-lg border border-teal-300/15 bg-teal-300/5 p-3 text-[11px] leading-relaxed text-teal-100/70"><CheckCircle2 size={14} className="mt-0.5 shrink-0 text-teal-300" />Projected completion remains within the planned August 30 target.</div></div></div><div className="console-card overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Saved reports</h2><p className="mt-1 text-xs text-muted-foreground">Scheduled and reusable report definitions</p></div><button onClick={() => toast.info("Report builder opened")} className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-2 text-[11px] font-bold hover:bg-muted"><Plus size={13} />Add report</button></div><div className="divide-y divide-border/70">{reports.map((report) => <div key={report.name} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center"><div className="grid h-9 w-9 place-items-center rounded-lg bg-violet-400/10 text-violet-300"><FileText size={16} /></div><div className="min-w-0 flex-1"><div className="text-xs font-bold">{report.name}</div><div className="mt-1 text-[11px] text-muted-foreground">{report.scope} <span className="mx-1 opacity-40">·</span> {report.cadence} <span className="mx-1 opacity-40">·</span> Updated {report.updated}</div></div><div className="text-[11px] font-semibold text-muted-foreground">{report.owner}</div><button onClick={() => toast.success("Report download started")} className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"><ArrowDownToLine size={14} /></button></div>)}</div></div></div>;
+}
+
+function AuditPage() {
+  return <div className="space-y-5"><div className="console-card flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"><div className="flex items-center gap-2"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-xs outline-none focus:border-ring sm:w-72" placeholder="Search audit events" /></div><button className="grid h-9 w-9 place-items-center rounded-lg border border-border text-muted-foreground hover:bg-muted"><Filter size={14} /></button></div><button onClick={() => toast.success("Audit log export started")} className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-[11px] font-bold hover:bg-muted"><ArrowDownToLine size={14} />Export log</button></div><div className="console-card overflow-hidden"><div className="border-b border-border px-5 py-4"><h2 className="font-['Space_Grotesk'] text-sm font-bold">Workspace activity</h2><p className="mt-1 text-xs text-muted-foreground">Showing the most recent 5 of 12,840 recorded events</p></div><div className="overflow-x-auto"><table className="w-full min-w-[820px] text-left"><thead className="bg-muted/40 text-[10px] font-bold uppercase tracking-[.12em] text-muted-foreground"><tr><th className="px-5 py-3">Time</th><th className="px-3 py-3">Actor</th><th className="px-3 py-3">Action</th><th className="px-3 py-3">Scope</th><th className="px-3 py-3">Result</th><th className="px-5 py-3">IP address</th></tr></thead><tbody className="divide-y divide-border/70">{auditEvents.map((event) => <tr key={`${event.time}-${event.action}`} className="data-row"><td className="px-5 py-4 font-mono text-[11px] text-muted-foreground">{event.time}</td><td className="px-3 py-4"><div className="flex items-center gap-2 text-xs font-semibold"><div className="grid h-6 w-6 place-items-center rounded-full bg-blue-400/15 text-[9px] font-bold text-blue-300">{event.actor === "System" ? "S" : event.actor.split(" ").map((x) => x[0]).join("")}</div>{event.actor}</div></td><td className="px-3 py-4 text-xs font-semibold">{event.action}</td><td className="px-3 py-4 text-xs text-muted-foreground">{event.scope}</td><td className="px-3 py-4"><StatusBadge status={event.result} /></td><td className="px-5 py-4 font-mono text-[11px] text-muted-foreground">{event.ip}</td></tr>)}</tbody></table></div><div className="flex items-center justify-between border-t border-border px-5 py-3 text-[11px] text-muted-foreground"><span>Retention policy: 365 days</span><span className="flex items-center gap-1.5 text-teal-300"><LockKeyhole size={13} />Immutable log enabled</span></div></div></div>;
+}
+
+function SettingsPage() {
+  const [section, setSection] = useState("Tenants");
+  const settingNav = [{ label: "Tenants", icon: Globe2 }, { label: "Migration policies", icon: SlidersHorizontal }, { label: "Notifications", icon: Bell }, { label: "Team & access", icon: Users }, { label: "Security", icon: ShieldCheck }];
+  return <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]"><div className="console-card h-fit p-2">{settingNav.map(({ label, icon: Icon }) => <button key={label} onClick={() => setSection(label)} className={classNames("flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-xs font-semibold", section === label ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><Icon size={15} />{label}</button>)}</div><div className="space-y-5"><div className="console-card overflow-hidden"><div className="border-b border-border px-5 py-4"><h2 className="font-['Space_Grotesk'] text-sm font-bold">{section}</h2><p className="mt-1 text-xs text-muted-foreground">{section === "Tenants" ? "Manage the source and target Microsoft 365 connections." : `Configure ${section.toLowerCase()} for your workspace.`}</p></div>{section === "Tenants" ? <TenantSettings /> : <PlaceholderSettings section={section} />}</div></div></div>;
+}
+
+function TenantSettings() {
+  const tenants = [{ type: "Source tenant", name: "Northwind Global", domain: "northwind.com", status: "Connected", color: "bg-blue-400/10 text-blue-300", icon: ArrowDownToLine }, { type: "Target tenant", name: "Contoso Enterprise", domain: "contoso.com", status: "Connected", color: "bg-teal-400/10 text-teal-300", icon: ArrowRight }];
+  return <div className="p-5"><div className="grid gap-4 md:grid-cols-2">{tenants.map((tenant) => { const Icon = tenant.icon; return <div key={tenant.type} className="rounded-xl border border-border bg-muted/20 p-4"><div className="flex items-start justify-between"><div className={classNames("grid h-9 w-9 place-items-center rounded-lg", tenant.color)}><Icon size={16} /></div><StatusBadge status={tenant.status} /></div><div className="mt-5 text-[11px] font-bold uppercase tracking-[.12em] text-muted-foreground">{tenant.type}</div><div className="mt-1 font-['Space_Grotesk'] text-lg font-bold">{tenant.name}</div><div className="mt-1 text-xs text-muted-foreground">{tenant.domain}</div><div className="mt-4 border-t border-border pt-3 text-[11px] text-muted-foreground">Last validated <span className="font-semibold text-foreground">Today, 09:18</span></div></div> })}</div><div className="mt-5 flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-8 w-8 place-items-center rounded-lg bg-violet-400/10 text-violet-300"><KeyRound size={15} /></div><div><div className="text-xs font-bold">Connection credentials</div><div className="mt-1 text-[11px] text-muted-foreground">OAuth app registrations are stored securely and rotated automatically.</div></div></div><button onClick={() => toast.info("Credential rotation requires an owner role")} className="rounded-lg border border-border px-3 py-2 text-[11px] font-bold hover:bg-muted">Manage credentials</button></div></div>;
+}
+
+function PlaceholderSettings({ section }: { section: string }) {
+  return <div className="p-5"><div className="rounded-xl border border-dashed border-border p-8 text-center"><div className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-primary/10 text-primary"><Settings size={19} /></div><div className="mt-4 text-sm font-bold">{section} controls</div><p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-muted-foreground">This view is ready for configuration controls. Changes are staged locally in this demonstration and will be persisted through the connected API in production.</p><button onClick={() => toast.success("Settings saved", { description: `${section} changes have been staged.` })} className="mt-5 rounded-lg bg-primary px-3.5 py-2.5 text-xs font-bold text-primary-foreground">Save staged changes</button></div></div>;
+}
+
+function MiniStat({ label, value, detail, icon: Icon, tone = "blue" }: { label: string; value: string; detail: string; icon: typeof Users; tone?: string }) { const colors: Record<string, string> = { blue: "bg-blue-400/10 text-blue-300", teal: "bg-teal-400/10 text-teal-300", amber: "bg-amber-400/10 text-amber-300", rose: "bg-rose-400/10 text-rose-300" }; return <div className="console-card flex items-start justify-between p-4"><div><div className="text-xs font-semibold text-muted-foreground">{label}</div><div className="metric-number mt-2 font-['Space_Grotesk'] text-2xl font-bold">{value}</div><div className="mt-1 text-[11px] text-muted-foreground">{detail}</div></div><div className={classNames("grid h-8 w-8 place-items-center rounded-lg", colors[tone])}><Icon size={15} /></div></div>; }
+
+function PlaceholderPanel({ tab }: { tab: string }) { return <div className="p-12 text-center"><div className="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-primary/10 text-primary"><Boxes size={20} /></div><div className="mt-4 text-sm font-bold">{tab} workspace</div><p className="mx-auto mt-2 max-w-sm text-xs leading-relaxed text-muted-foreground">Manage {tab.toLowerCase()} with the same readiness-first workflow. This surface is connected to the demo navigation.</p><button onClick={() => toast.info(`${tab} tools are ready for your migration plan`)} className="mt-5 rounded-lg border border-border px-3 py-2 text-xs font-bold hover:bg-muted">Explore {tab.toLowerCase()}</button></div>; }
+
+function CommandPalette({ close, go }: { close: () => void; go: (path: string) => void }) {
+  const commands = [{ label: "Go to overview", path: "/", icon: LayoutDashboard }, { label: "Create migration job", path: "/jobs", icon: Plus }, { label: "Review discovery mapping", path: "/discovery", icon: Network }, { label: "Open remediation queue", path: "/errors", icon: AlertCircle }, { label: "Open settings", path: "/settings", icon: Settings }];
+  return <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/65 px-4 pt-[13vh] backdrop-blur-sm" onMouseDown={close}><div className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-center gap-3 border-b border-border px-4"><Search size={16} className="text-muted-foreground" /><input autoFocus placeholder="Jump to a workspace or action..." className="h-12 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" /><kbd className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">ESC</kbd></div><div className="p-2"><div className="px-2 py-2 text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Quick actions</div>{commands.map(({ label, path, icon: Icon }) => <button key={label} onClick={() => { if (label.includes("Create")) toast.info("Use New migration job to configure a workload"); go(path); close(); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-xs font-semibold hover:bg-muted"><Icon size={16} className="text-primary" /><span>{label}</span><ChevronRight size={14} className="ml-auto text-muted-foreground" /></button>)}</div><div className="flex items-center gap-4 border-t border-border bg-muted/40 px-4 py-2.5 text-[10px] text-muted-foreground"><span><kbd className="mr-1 rounded border border-border bg-card px-1">↑↓</kbd>Navigate</span><span><kbd className="mr-1 rounded border border-border bg-card px-1">↵</kbd>Select</span><span><kbd className="mr-1 rounded border border-border bg-card px-1">esc</kbd>Close</span></div></div></div>;
+}
+
+function JobWizard({ close }: { close: () => void }) {
+  const [step, setStep] = useState(1); const [name, setName] = useState("OneDrive pilot wave"); const [scope, setScope] = useState("Users discovered in Finance"); const [concurrency, setConcurrency] = useState("Balanced"); const [creating, setCreating] = useState(false);
+  const steps = ["Workload", "Scope", "Options", "Review"];
+  const submit = async () => { setCreating(true); const result = await mockCreateJob({ name, scope, concurrency }); setCreating(false); toast.success("Migration job created", { description: `${result.id} is queued and ready for validation.` }); close(); };
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm"><div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><div className="eyebrow">New migration job</div><h2 className="mt-1 font-['Space_Grotesk'] text-lg font-bold">Create a OneDrive migration</h2></div><button onClick={close} className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted" aria-label="Close dialog"><X size={17} /></button></div><div className="border-b border-border bg-muted/30 px-5 py-4"><div className="flex items-center gap-1 sm:gap-3">{steps.map((item, index) => <div key={item} className="flex min-w-0 flex-1 items-center gap-2"><div className={classNames("grid h-7 w-7 shrink-0 place-items-center rounded-full text-[11px] font-bold", step > index + 1 ? "bg-teal-400 text-[#08282d]" : step === index + 1 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")}>{step > index + 1 ? <Check size={14} /> : index + 1}</div><span className={classNames("hidden truncate text-xs font-semibold sm:block", step === index + 1 ? "text-foreground" : "text-muted-foreground")}>{item}</span>{index < steps.length - 1 && <div className={classNames("h-px flex-1", step > index + 1 ? "bg-teal-400/70" : "bg-border")} />}</div>)}</div></div><div className="subtle-scrollbar flex-1 overflow-auto p-5 sm:p-7">{step === 1 && <div className="space-y-5"><div><h3 className="font-['Space_Grotesk'] text-xl font-bold">Choose a workload</h3><p className="mt-1 text-sm text-muted-foreground">Start with a guided OneDrive move. Other Microsoft 365 workloads are available after validation.</p></div><div className="grid gap-3 sm:grid-cols-3">{workloadOptions.map(({ label, desc, icon: Icon, enabled }) => <button key={String(label)} onClick={() => !enabled && toast.info(`${label} workload is coming soon`)} className={classNames("rounded-xl border p-4 text-left transition", enabled ? "border-primary bg-primary/7 ring-1 ring-primary/30" : "border-border bg-muted/20 opacity-60 hover:opacity-85")}><div className={classNames("grid h-10 w-10 place-items-center rounded-xl", enabled ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground")}><Icon size={19} /></div><div className="mt-4 text-sm font-bold">{label}</div><div className="mt-1 text-xs text-muted-foreground">{desc}</div>{enabled && <div className="mt-4 flex items-center gap-1.5 text-[11px] font-bold text-primary"><CheckCircle2 size={13} />Recommended starting point</div>}</button>)}</div></div>}{step === 2 && <div className="space-y-5"><div><h3 className="font-['Space_Grotesk'] text-xl font-bold">Define the migration scope</h3><p className="mt-1 text-sm text-muted-foreground">Use a discovery segment to keep the first wave predictable and easy to validate.</p></div><label className="block"><span className="mb-2 block text-xs font-bold">Job name</span><input value={name} onChange={(e) => setName(e.target.value)} className="h-11 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-ring" /></label><label className="block"><span className="mb-2 block text-xs font-bold">Source scope</span><select value={scope} onChange={(e) => setScope(e.target.value)} className="h-11 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus:border-ring"><option>Users discovered in Finance</option><option>Users discovered in Engineering</option><option>All mapped users · wave 01</option></select></label><div className="rounded-xl border border-teal-300/15 bg-teal-300/5 p-4"><div className="flex items-start gap-3"><Sparkles size={17} className="mt-0.5 text-teal-300" /><div><div className="text-xs font-bold text-teal-100">242 users ready to migrate</div><div className="mt-1 text-[11px] leading-relaxed text-teal-100/65">All selected users have a resolved target identity and a valid destination license.</div></div></div></div></div>}{step === 3 && <div className="space-y-5"><div><h3 className="font-['Space_Grotesk'] text-xl font-bold">Tune migration options</h3><p className="mt-1 text-sm text-muted-foreground">Start conservatively; you can scale concurrency after the pilot validates.</p></div><div className="space-y-3"><div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold">Concurrency</div><div className="mt-1 text-[11px] text-muted-foreground">Controls how many users process in parallel</div></div><select value={concurrency} onChange={(e) => setConcurrency(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none"><option>Conservative</option><option>Balanced</option><option>High throughput</option></select></div><div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold">Pre-flight validation</div><div className="mt-1 text-[11px] text-muted-foreground">Check licensing and target readiness before transfer</div></div><select defaultValue="Enabled" className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none"><option>Enabled</option><option>Disabled</option></select></div><div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold">Preserve sharing links</div><div className="mt-1 text-[11px] text-muted-foreground">Keep links and permissions where supported</div></div><select defaultValue="Enabled" className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none"><option>Enabled</option><option>Disabled</option></select></div></div></div>}{step === 4 && <div className="space-y-5"><div><h3 className="font-['Space_Grotesk'] text-xl font-bold">Review and create</h3><p className="mt-1 text-sm text-muted-foreground">Your job will be queued for a final pre-flight check before it can run.</p></div><div className="divide-y divide-border rounded-xl border border-border">{[["Workload", "OneDrive"], ["Job name", name], ["Scope", scope], ["Concurrency", concurrency], ["Users ready", "242 users"]].map(([key, value]) => <div key={key} className="flex items-center justify-between gap-4 px-4 py-3.5 text-xs"><span className="text-muted-foreground">{key}</span><span className="font-bold text-foreground">{value}</span></div>)}</div><div className="flex items-start gap-3 rounded-xl border border-amber-300/15 bg-amber-300/5 p-4"><AlertCircle size={17} className="mt-0.5 shrink-0 text-amber-300" /><div><div className="text-xs font-bold text-amber-100">Pre-flight check required</div><div className="mt-1 text-[11px] leading-relaxed text-amber-100/65">Porterline will validate credentials, licensing, and mapping before starting transfer.</div></div></div></div>}</div><div className="flex items-center justify-between border-t border-border px-5 py-4"><button onClick={step === 1 ? close : () => setStep(step - 1)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground">{step === 1 ? "Cancel" : <><ArrowLeft size={14} />Back</>}</button>{step < 4 ? <button onClick={() => setStep(step + 1)} className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2.5 text-xs font-bold text-primary-foreground">Continue <ArrowRight size={14} /></button> : <button disabled={creating} onClick={submit} className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2.5 text-xs font-bold text-primary-foreground disabled:opacity-60">{creating ? <RefreshCcw size={14} className="animate-spin" /> : <Plus size={14} />}Create migration job</button>}</div></div></div>;
 }
 
 export default App;
