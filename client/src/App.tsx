@@ -66,6 +66,7 @@ import {
 import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { StatusBadge, LiveDot } from "@/components/StatusBadge";
 import { Toaster } from "@/components/ui/sonner";
+import { Dashboard as ComprehensiveDashboard } from "@/components/dashboard/Dashboard";
 import { activity, auditEvents, discoveryUsers, errorRows, migrationJobs, mockCreateJob, mockGetOverview, overviewStats, statusBreakdown, throughputData, type MigrationJob } from "@/lib/mockApi";
 
 type NavItem = { label: string; icon: typeof LayoutDashboard; path: string; count?: string; section?: string };
@@ -136,7 +137,7 @@ function App() {
         <main className="subtle-scrollbar min-h-0 flex-1 overflow-auto">
           <div className="mx-auto max-w-[1500px] p-4 sm:p-6 xl:p-8">
             <PageHeader meta={meta} pageKey={pageKey} go={go} setJobWizardOpen={setJobWizardOpen} />
-            {pageKey === "overview" && <Dashboard onNewJob={() => setJobWizardOpen(true)} onRefresh={() => { setLastRefresh("just now"); toast.success("Workspace data refreshed"); }} />}
+            {pageKey === "overview" && <ComprehensiveDashboard onNewJob={() => setJobWizardOpen(true)} onRefresh={() => { setLastRefresh("just now"); toast.success("Workspace data refreshed"); }} />}
             {pageKey === "jobs" && <JobsPage onNewJob={() => setJobWizardOpen(true)} />}
             {pageKey === "discovery" && <DiscoveryPage />}
             {pageKey === "errors" && <ErrorsPage />}
