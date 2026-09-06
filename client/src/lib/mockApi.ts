@@ -1,4 +1,4 @@
-export type MigrationStatus = "Running" | "Completed" | "Needs review" | "Queued" | "Failed";
+export type MigrationStatus = "Running" | "Paused" | "Completed" | "Needs review" | "Queued" | "Failed" | "Cancelled";
 
 export type MigrationJob = {
   id: string;
@@ -12,6 +12,11 @@ export type MigrationJob = {
   throughput: string;
   errors: number;
   eta: string;
+  checkpoint?: Record<string, unknown> | null;
+  batchMode?: boolean;
+  batchSize?: string | null;
+  schedule?: string | null;
+  scheduledAt?: string | null;
 };
 
 export const overviewStats = [

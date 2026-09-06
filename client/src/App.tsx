@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { toast } from "sonner";
+import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
+import { useMigrationRealtime } from "@/hooks/useMigrationRealtime";
 import {
   Activity,
   AlertCircle,
@@ -70,7 +73,6 @@ import { Dashboard as ComprehensiveDashboard } from "@/components/dashboard/Dash
 import { activity, auditEvents, discoveryUsers, errorRows, migrationJobs, mockCreateJob, mockGetOverview, overviewStats, statusBreakdown, throughputData, type MigrationJob } from "@/lib/mockApi";
 
 type NavItem = { label: string; icon: typeof LayoutDashboard; path: string; count?: string; section?: string };
-
 const navItems: NavItem[] = [
   { label: "Overview", icon: LayoutDashboard, path: "/" },
   { label: "Migration jobs", icon: FolderKanban, path: "/jobs", count: "12" },
@@ -102,6 +104,7 @@ function classNames(...classes: Array<string | false | null | undefined>) { retu
 
 function App() {
   const [location, navigate] = useLocation();
+  const { isAuthenticated } = useAuth();
   const [dark, setDark] = useState(true);
   const [mobileNav, setMobileNav] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
@@ -109,6 +112,8 @@ function App() {
   const [jobWizardOpen, setJobWizardOpen] = useState(false);
   const [live, setLive] = useState(true);
   const [lastRefresh, setLastRefresh] = useState("just now");
+  const persistedJobsQuery = trpc.migration.jobs.list.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: live ? 30000 : false });
+  useMigrationRealtime(isAuthenticated && live);
 
   useEffect(() => { document.documentElement.classList.toggle("dark", dark); }, [dark]);
   useEffect(() => {
@@ -128,7 +133,9 @@ function App() {
   const pageKey = location === "/" ? "overview" : location.replace(/^\//, "").split("/")[0] || "overview";
   const meta = pageMeta[pageKey] ?? pageMeta.overview;
   const go = (path: string) => { navigate(path); setMobileNav(false); };
+  const jobs = isAuthenticated && persistedJobsQuery.data?.length ? persistedJobsQuery.data : migrationJobs;
 
+  // make sure to consider if you need authentication for certain routes
   return (
     <div className="app-shell flex min-h-screen">
       <Toaster position="bottom-right" />
@@ -139,7 +146,7 @@ function App() {
           <div className="mx-auto max-w-[1500px] p-4 sm:p-6 xl:p-8">
             <PageHeader meta={meta} pageKey={pageKey} go={go} setJobWizardOpen={setJobWizardOpen} />
             {pageKey === "overview" && <ComprehensiveDashboard onNewJob={() => setJobWizardOpen(true)} onRefresh={() => { setLastRefresh("just now"); toast.success("Workspace data refreshed"); }} />}
-            {pageKey === "jobs" && <JobsPage onNewJob={() => setJobWizardOpen(true)} />}
+            {pageKey === "jobs" && <JobsPage jobs={jobs} authenticated={isAuthenticated} onNewJob={() => setJobWizardOpen(true)} />}
             {pageKey === "discovery" && <DiscoveryPage />}
             {pageKey === "errors" && <ErrorsPage />}
             {pageKey === "reports" && <ReportsPage />}
@@ -152,7 +159,7 @@ function App() {
         </div>
       </div>
       {searchOpen && <CommandPalette close={() => setSearchOpen(false)} go={go} />}
-      {jobWizardOpen && <JobWizard close={() => setJobWizardOpen(false)} />}
+      {jobWizardOpen && <JobWizard authenticated={isAuthenticated} close={() => setJobWizardOpen(false)} />}
       <button aria-label="Open navigation" onClick={() => setMobileNav(true)} className="mobile-only fixed bottom-5 left-5 z-30 h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl"><Menu size={20} /></button>
     </div>
   );
@@ -211,23 +218,31 @@ function MetricCard({ label, value, detail, tone, index }: { label: string; valu
   return <div className={`console-card reveal reveal-delay-${Math.min(index, 3)} p-4 sm:p-5`}><div className="flex items-start justify-between"><span className="text-xs font-semibold text-muted-foreground">{label}</span><span className={classNames("grid h-8 w-8 place-items-center rounded-lg", accents[tone])}><Icon size={15} /></span></div><div className="metric-number mt-4 font-['Space_Grotesk'] text-3xl font-bold text-foreground">{value}</div><div className="mt-2 flex items-center gap-1.5 text-[11px] font-semibold text-teal-300"><ArrowRight size={12} />{detail}</div></div>;
 }
 
-function JobsTable({ compact = false, onNewJob }: { compact?: boolean; onNewJob?: () => void }) {
-  const visible = compact ? migrationJobs.slice(0, 4) : migrationJobs;
+function JobsTable({ compact = false, onNewJob, jobs = migrationJobs, authenticated = false }: { compact?: boolean; onNewJob?: () => void; jobs?: MigrationJob[]; authenticated?: boolean }) {
+  const visible = compact ? jobs.slice(0, 4) : jobs;
   return <div className="console-card overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Active migration jobs</h2><p className="mt-1 text-xs text-muted-foreground">Latest workload progress across your tenants</p></div>{compact ? <Link href="/jobs" className="flex items-center gap-1 text-[11px] font-bold text-primary hover:underline">View all <ChevronRight size={13} /></Link> : <div className="flex items-center gap-2"><button className="grid h-8 w-8 place-items-center rounded-lg border border-border text-muted-foreground hover:bg-muted"><Filter size={14} /></button><button onClick={() => toast.info("Bulk actions are available when jobs are selected")} className="grid h-8 w-8 place-items-center rounded-lg border border-border text-muted-foreground hover:bg-muted"><MoreHorizontal size={14} /></button></div>}</div><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead className="bg-muted/50 text-[10px] font-bold uppercase tracking-[.12em] text-muted-foreground"><tr><th className="px-5 py-3">Job</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Progress</th><th className="px-3 py-3">Throughput</th><th className="px-3 py-3">ETA</th><th className="px-5 py-3 text-right"> </th></tr></thead><tbody className="divide-y divide-border/70">{visible.map((job) => <JobRow key={job.id} job={job} />)}</tbody></table></div>{!compact && <div className="flex items-center justify-between border-t border-border px-5 py-3 text-[11px] text-muted-foreground"><span>Showing 5 of 12 jobs</span><div className="flex items-center gap-1"><button className="rounded-md border border-border px-2 py-1 hover:bg-muted">Previous</button><button className="rounded-md border border-border bg-muted px-2 py-1 font-bold text-foreground">1</button><button className="rounded-md border border-border px-2 py-1 hover:bg-muted">2</button><button className="rounded-md border border-border px-2 py-1 hover:bg-muted">Next</button></div></div>}</div>;
 }
 
-function JobRow({ job }: { job: MigrationJob }) {
-  return <tr className="data-row"><td className="px-5 py-3.5"><div className="flex items-center gap-3"><div className="grid h-8 w-8 place-items-center rounded-lg bg-blue-400/10 text-blue-300"><Cloud size={15} /></div><div><div className="text-xs font-bold text-foreground">{job.name}</div><div className="mt-1 text-[10px] text-muted-foreground">{job.id} <span className="mx-1 opacity-50">·</span> {job.workload}</div></div></div></td><td className="px-3 py-3.5"><StatusBadge status={job.status} /></td><td className="px-3 py-3.5"><div className="w-32"><div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold"><span className="text-foreground">{job.progress}%</span><span className="text-muted-foreground">{job.items.split("/")[0].trim()}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={classNames("h-full rounded-full", job.status === "Needs review" ? "bg-amber-400" : "bg-gradient-to-r from-cyan-400 to-blue-400")} style={{ width: `${job.progress}%` }} /></div></div></td><td className="px-3 py-3.5 text-xs font-semibold text-muted-foreground">{job.throughput}</td><td className="px-3 py-3.5 text-xs text-muted-foreground">{job.eta}</td><td className="px-5 py-3.5 text-right"><button onClick={() => toast.info(`Opening ${job.id}`)} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`Open ${job.name}`}><ChevronRight size={16} /></button></td></tr>;
+function JobRow({ job, authenticated = false }: { job: MigrationJob; authenticated?: boolean }) {
+  const utils = trpc.useUtils();
+  const control = trpc.migration.jobs.control.useMutation({ onSuccess: () => { void utils.migration.jobs.list.invalidate(); toast.success("Migration control applied", { description: `${job.id} is updating from its checkpoint.` }); }, onError: (error) => toast.error("Migration control failed", { description: error.message }) });
+  const action = job.status === "Running" ? "pause" : job.status === "Paused" || job.status === "Needs review" || job.status === "Failed" ? "resume" : null;
+  const invokeAction = () => {
+    if (!action) return;
+    if (!authenticated) { toast.info("Sign in to control this migration", { description: "The preview uses mock job data; persisted controls are protected by workspace auth." }); return; }
+    control.mutate({ jobId: job.id, action });
+  };
+  return <tr className="data-row"><td className="px-5 py-3.5"><div className="flex items-center gap-3"><div className="grid h-8 w-8 place-items-center rounded-lg bg-blue-400/10 text-blue-300"><Cloud size={15} /></div><div><div className="text-xs font-bold text-foreground">{job.name}</div><div className="mt-1 text-[10px] text-muted-foreground">{job.id} <span className="mx-1 opacity-50">·</span> {job.workload}</div></div></div></td><td className="px-3 py-3.5"><StatusBadge status={job.status} /></td><td className="px-3 py-3.5"><div className="w-32"><div className="mb-1.5 flex items-center justify-between text-[10px] font-semibold"><span className="text-foreground">{job.progress}%</span><span className="text-muted-foreground">{job.items.split("/")[0].trim()}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={classNames("h-full rounded-full", job.status === "Needs review" || job.status === "Paused" ? "bg-amber-400" : "bg-gradient-to-r from-cyan-400 to-blue-400")} style={{ width: `${job.progress}%` }} /></div></div></td><td className="px-3 py-3.5 text-xs font-semibold text-muted-foreground">{job.throughput}</td><td className="px-3 py-3.5 text-xs text-muted-foreground">{job.eta}</td><td className="px-5 py-3.5 text-right"><div className="flex items-center justify-end gap-1"><button onClick={invokeAction} disabled={!action || control.isPending} className={classNames("rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35", action ? "" : "invisible")} aria-label={action === "pause" ? `Pause ${job.name}` : `Resume ${job.name}`}>{action === "pause" ? <Pause size={14} /> : <Play size={14} />}</button><button onClick={() => toast.info(`Opening ${job.id}`)} className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label={`Open ${job.name}`}><ChevronRight size={16} /></button></div></td></tr>;
 }
 
 function ActivityCard({ onRefresh }: { onRefresh: () => void }) {
   return <div className="console-card overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Recent activity</h2><p className="mt-1 text-xs text-muted-foreground">Live workspace events</p></div><button onClick={onRefresh} className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Refresh activity"><RefreshCcw size={14} /></button></div><div className="divide-y divide-border/70">{activity.map((item) => <div key={item.title} className="flex gap-3 px-5 py-4"><div className={classNames("mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full", item.type === "success" ? "bg-teal-400/10 text-teal-300" : item.type === "warning" ? "bg-amber-400/10 text-amber-300" : item.type === "error" ? "bg-rose-400/10 text-rose-300" : "bg-blue-400/10 text-blue-300")}>{item.type === "success" ? <CheckCircle2 size={14} /> : item.type === "warning" ? <AlertCircle size={14} /> : item.type === "error" ? <AlertCircle size={14} /> : <Activity size={14} />}</div><div className="min-w-0"><div className="text-xs font-semibold text-foreground">{item.title}</div><div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{item.detail}</div></div></div>)}</div><button onClick={() => toast.info("Activity history is available in the Audit log")} className="flex w-full items-center justify-center gap-1.5 border-t border-border py-3 text-[11px] font-bold text-primary hover:bg-muted">View activity log <ArrowRight size={13} /></button></div>;
 }
 
-function JobsPage({ onNewJob }: { onNewJob: () => void }) {
+function JobsPage({ jobs, authenticated, onNewJob }: { jobs: MigrationJob[]; authenticated: boolean; onNewJob: () => void }) {
   const [filter, setFilter] = useState("All jobs");
-  const filtered = filter === "All jobs" ? migrationJobs : migrationJobs.filter((j) => j.status === filter);
-  return <div className="space-y-5"><div className="console-card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:border-ring sm:w-64" placeholder="Search jobs" /></div><select value={filter} onChange={(e) => setFilter(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none focus:border-ring"><option>All jobs</option><option>Running</option><option>Completed</option><option>Needs review</option><option>Queued</option></select></div><div className="flex items-center gap-2 text-[11px] text-muted-foreground"><span className="hidden sm:inline">12 total jobs</span><button onClick={onNewJob} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 font-bold text-primary-foreground"><Plus size={14} />New job</button></div></div><JobsTable compact={false} onNewJob={onNewJob} /><div className="hidden">{filtered.length}</div></div>;
+  const filtered = filter === "All jobs" ? jobs : jobs.filter((j) => j.status === filter);
+  return <div className="space-y-5"><div className="console-card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:border-ring sm:w-64" placeholder="Search jobs" /></div><select value={filter} onChange={(e) => setFilter(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none focus:border-ring"><option>All jobs</option><option>Running</option><option>Paused</option><option>Completed</option><option>Needs review</option><option>Queued</option><option>Failed</option></select></div><div className="flex items-center gap-2 text-[11px] text-muted-foreground"><span className="hidden sm:inline">{jobs.length} total jobs</span><button onClick={onNewJob} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 font-bold text-primary-foreground"><Plus size={14} />New job</button></div></div><JobsTable compact={false} jobs={filtered} authenticated={authenticated} onNewJob={onNewJob} /></div>;
 }
 
 function DiscoveryPage() {
@@ -261,8 +276,11 @@ function SettingsPage() {
 }
 
 function TenantSettings() {
-  const tenants = [{ type: "Source tenant", name: "Northwind Global", domain: "northwind.com", status: "Connected", color: "bg-blue-400/10 text-blue-300", icon: ArrowDownToLine }, { type: "Target tenant", name: "Contoso Enterprise", domain: "contoso.com", status: "Connected", color: "bg-teal-400/10 text-teal-300", icon: ArrowRight }];
-  return <div className="p-5"><div className="grid gap-4 md:grid-cols-2">{tenants.map((tenant) => { const Icon = tenant.icon; return <div key={tenant.type} className="rounded-xl border border-border bg-muted/20 p-4"><div className="flex items-start justify-between"><div className={classNames("grid h-9 w-9 place-items-center rounded-lg", tenant.color)}><Icon size={16} /></div><StatusBadge status={tenant.status} /></div><div className="mt-5 text-[11px] font-bold uppercase tracking-[.12em] text-muted-foreground">{tenant.type}</div><div className="mt-1 font-['Space_Grotesk'] text-lg font-bold">{tenant.name}</div><div className="mt-1 text-xs text-muted-foreground">{tenant.domain}</div><div className="mt-4 border-t border-border pt-3 text-[11px] text-muted-foreground">Last validated <span className="font-semibold text-foreground">Today, 09:18</span></div></div> })}</div><div className="mt-5 flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-8 w-8 place-items-center rounded-lg bg-violet-400/10 text-violet-300"><KeyRound size={15} /></div><div><div className="text-xs font-bold">Connection credentials</div><div className="mt-1 text-[11px] text-muted-foreground">OAuth app registrations are stored securely and rotated automatically.</div></div></div><button onClick={() => toast.info("Credential rotation requires an owner role")} className="rounded-lg border border-border px-3 py-2 text-[11px] font-bold hover:bg-muted">Manage credentials</button></div></div>;
+  const { isAuthenticated } = useAuth();
+  const graphHealth = trpc.migration.graph.health.useQuery(undefined, { enabled: isAuthenticated, refetchInterval: 60000 });
+  const healthByTenant = new Map((graphHealth.data ?? []).map((item) => [item.tenant, item]));
+  const tenants = [{ key: "source" as const, type: "Source tenant", name: "Northwind Global", domain: "northwind.com", color: "bg-blue-400/10 text-blue-300", icon: ArrowDownToLine }, { key: "target" as const, type: "Target tenant", name: "Contoso Enterprise", domain: "contoso.com", color: "bg-teal-400/10 text-teal-300", icon: ArrowRight }];
+  return <div className="p-5"><div className="mb-4 rounded-xl border border-blue-300/15 bg-blue-300/5 p-4 text-[11px] leading-relaxed text-blue-100/70"><div className="flex items-start gap-2.5"><ShieldCheck size={15} className="mt-0.5 shrink-0 text-blue-300" /><span>Live Microsoft Graph access uses server-side client credentials. Secrets never reach the browser. {isAuthenticated ? "Health is checked every 60 seconds." : "Sign in to view the protected health check."}</span></div></div><div className="grid gap-4 md:grid-cols-2">{tenants.map((tenant) => { const Icon = tenant.icon; const health = healthByTenant.get(tenant.key); const status = !isAuthenticated ? "Preview" : health?.status === "connected" ? "Connected" : health?.status === "error" ? "Action needed" : "Not configured"; return <div key={tenant.type} className="rounded-xl border border-border bg-muted/20 p-4"><div className="flex items-start justify-between"><div className={classNames("grid h-9 w-9 place-items-center rounded-lg", tenant.color)}><Icon size={16} /></div><StatusBadge status={status} /></div><div className="mt-5 text-[11px] font-bold uppercase tracking-[.12em] text-muted-foreground">{tenant.type}</div><div className="mt-1 font-['Space_Grotesk'] text-lg font-bold">{health?.displayName ?? tenant.name}</div><div className="mt-1 text-xs text-muted-foreground">{tenant.domain}</div><div className="mt-4 border-t border-border pt-3 text-[11px] text-muted-foreground">{health?.detail ?? "Demo tenant shown until Graph credentials are configured."}</div></div> })}</div><div className="mt-5 flex flex-col gap-3 rounded-xl border border-border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-start gap-3"><div className="grid h-8 w-8 place-items-center rounded-lg bg-violet-400/10 text-violet-300"><KeyRound size={15} /></div><div><div className="text-xs font-bold">Connection credentials</div><div className="mt-1 text-[11px] text-muted-foreground">Set MS_GRAPH_SOURCE_TENANT_ID, MS_GRAPH_SOURCE_CLIENT_ID, MS_GRAPH_SOURCE_CLIENT_SECRET and the matching target variables in server-side project secrets.</div></div></div><button onClick={() => toast.info("Credential rotation requires an owner role")} className="rounded-lg border border-border px-3 py-2 text-[11px] font-bold hover:bg-muted">Manage credentials</button></div></div>;
 }
 
 function PlaceholderSettings({ section }: { section: string }) {
@@ -278,7 +296,7 @@ function CommandPalette({ close, go }: { close: () => void; go: (path: string) =
   return <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/65 px-4 pt-[13vh] backdrop-blur-sm" onMouseDown={close}><div className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl" onMouseDown={(event) => event.stopPropagation()}><div className="flex items-center gap-3 border-b border-border px-4"><Search size={16} className="text-muted-foreground" /><input autoFocus placeholder="Jump to a workspace or action..." className="h-12 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" /><kbd className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">ESC</kbd></div><div className="p-2"><div className="px-2 py-2 text-[10px] font-bold uppercase tracking-[.14em] text-muted-foreground">Quick actions</div>{commands.map(({ label, path, icon: Icon }) => <button key={label} onClick={() => { if (label.includes("Create")) toast.info("Use New migration job to configure a workload"); go(path); close(); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-xs font-semibold hover:bg-muted"><Icon size={16} className="text-primary" /><span>{label}</span><ChevronRight size={14} className="ml-auto text-muted-foreground" /></button>)}</div><div className="flex items-center gap-4 border-t border-border bg-muted/40 px-4 py-2.5 text-[10px] text-muted-foreground"><span><kbd className="mr-1 rounded border border-border bg-card px-1">↑↓</kbd>Navigate</span><span><kbd className="mr-1 rounded border border-border bg-card px-1">↵</kbd>Select</span><span><kbd className="mr-1 rounded border border-border bg-card px-1">esc</kbd>Close</span></div></div></div>;
 }
 
-function JobWizard({ close }: { close: () => void }) {
+function JobWizard({ authenticated, close }: { authenticated: boolean; close: () => void }) {
   const [step, setStep] = useState(1);
   const [workload, setWorkload] = useState("OneDrive");
   const [name, setName] = useState("OneDrive pilot wave");
@@ -290,6 +308,7 @@ function JobWizard({ close }: { close: () => void }) {
   const [startDate, setStartDate] = useState("2026-09-08");
   const [startTime, setStartTime] = useState("09:00");
   const [creating, setCreating] = useState(false);
+  const createJob = trpc.migration.jobs.create.useMutation({ onSuccess: (result) => { setCreating(false); toast.success("Migration job created", { description: `${result.id} · ${workload}${batchMode ? " batch schedule" : ""} persisted and queued for validation.` }); close(); }, onError: (error) => { setCreating(false); toast.error("Could not create migration job", { description: error.message }); } });
   const steps = ["Workload", "Scope", "Options", "Review"];
   const selectedOption = workloadOptions.find((option) => option.label === workload) ?? workloadOptions[0];
   const workloadCopy: Record<string, { scope: string[]; ready: string; description: string }> = {
@@ -300,7 +319,7 @@ function JobWizard({ close }: { close: () => void }) {
   };
   const currentCopy = workloadCopy[workload];
   const selectWorkload = (label: string) => { setWorkload(label); setName(`${label} pilot wave`); setScope(workloadCopy[label].scope[0]); };
-  const submit = async () => { setCreating(true); const result = await mockCreateJob({ name, scope, concurrency }); setCreating(false); toast.success("Migration job created", { description: `${result.id} · ${workload}${batchMode ? " batch schedule" : ""} queued for validation.` }); close(); };
+  const submit = async () => { setCreating(true); if (authenticated) { createJob.mutate({ name, workload: workload as "OneDrive" | "SharePoint" | "Exchange" | "Teams", scope, concurrency, batchMode, batchSize: batchMode ? batchSize : undefined, schedule: batchMode ? schedule : undefined, scheduledAt: batchMode && schedule === "Start at scheduled time" ? new Date(`${startDate}T${startTime}:00`) : null, itemsTotal: Number.parseInt(currentCopy.ready, 10) || 0 }); return; } const result = await mockCreateJob({ name, scope, concurrency }); setCreating(false); toast.success("Migration job created", { description: `${result.id} · ${workload}${batchMode ? " batch schedule" : ""} queued for validation.` }); close(); };
 
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm"><div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl">
     <div className="flex items-center justify-between border-b border-border px-5 py-4"><div><div className="eyebrow">New migration job</div><h2 className="mt-1 font-['Space_Grotesk'] text-lg font-bold">Create a {workload} migration</h2></div><button onClick={close} className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted" aria-label="Close dialog"><X size={17} /></button></div>
