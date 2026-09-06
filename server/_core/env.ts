@@ -15,4 +15,11 @@ export const ENV = {
     targetClientId: process.env.MS_GRAPH_TARGET_CLIENT_ID ?? "",
     targetClientSecret: process.env.MS_GRAPH_TARGET_CLIENT_SECRET ?? "",
   },
+  sharePoint: {
+    targetSiteUrl: process.env.MS_SHAREPOINT_TARGET_SITE_URL ?? "",
+    targetWebId: process.env.MS_SHAREPOINT_TARGET_WEB_ID ?? "",
+    sourceContainerSasUri: process.env.MS_SHAREPOINT_SOURCE_CONTAINER_SAS_URI ?? "",
+    manifestContainerSasUri: process.env.MS_SHAREPOINT_MANIFEST_CONTAINER_SAS_URI ?? "",
+    queueReportSasUri: process.env.MS_SHAREPOINT_QUEUE_REPORT_SAS_URI ?? "",
+  },
 };
