@@ -5,6 +5,7 @@ import { protectedProcedure, router } from "./_core/trpc";
 import { checkGraphHealth, discoverGraphUsers } from "./graph";
 import { appendMigrationEvent, createMigrationJob, getMigrationJob, listMigrationEvents, listMigrationJobs, updateMigrationJob } from "./migrationRepo";
 import { enumerateOneDriveItems, getSharePointMigrationProgress, stageOneDrivePackage, submitSharePointMigration } from "./sharepointMigration";
+import { enqueueSharePointPolling } from "./migrationWorker";
 
 const workloads = z.enum(["OneDrive", "SharePoint", "Exchange", "Teams"]);
 const status = z.enum(["Queued", "Running", "Paused", "Completed", "Needs review", "Failed", "Cancelled"]);
@@ -63,6 +64,8 @@ export const migrationRouter = router({
         const checkpoint = { provider: "SharePoint Migration API", packageId: staged.packageId, sharePointJobId: submitted.jobId, nextToken: "0", driveId: input.driveId, rootItemId: input.rootItemId, stagedFiles: staged.stagedFiles, totalItems: staged.totalItems };
         const updated = await updateMigrationJob(job.id, { status: "Running", progress: 2, itemsTotal: staged.totalItems, checkpoint: JSON.stringify(checkpoint), eta: "Queued by SharePoint" });
         await appendMigrationEvent(job.id, "sharepoint.submitted", checkpoint);
+        const queued = await enqueueSharePointPolling(job.id, 5000);
+        if (!queued) await appendMigrationEvent(job.id, "sharepoint.polling_waiting", { detail: "REDIS_URL is not configured; automatic progress polling is disabled." });
         return updated;
       } catch (error) {
         const detail = error instanceof Error ? error.message : "SharePoint Migration API submission failed";

@@ -19,6 +19,7 @@ Configure these values as server-side project secrets. Do not expose them to the
 | `MS_SHAREPOINT_SOURCE_CONTAINER_SAS_URI` | SAS URI for the Azure Blob container holding content files |
 | `MS_SHAREPOINT_MANIFEST_CONTAINER_SAS_URI` | SAS URI for a separate Azure Blob container holding manifests and logs |
 | `MS_SHAREPOINT_QUEUE_REPORT_SAS_URI` | Optional Azure Queue SAS URI for job reports |
+| `REDIS_URL` | Redis connection URL for BullMQ, such as `rediss://:password@host:6380` |
 
 The SharePoint API access token is requested for the target SharePoint origin rather than the Microsoft Graph audience. Graph tokens are used for source OneDrive enumeration and downloads.
 
@@ -35,11 +36,15 @@ The source and manifest containers must be separate. The Migration API needs rea
 3. The server stages binary content and generates `Manifest.xml`, `ExportSettings.xml`, `SystemData.xml`, and `UserGroupMap.xml`.
 4. The server submits the package to `/_api/site/CreateMigrationJob`.
 5. The returned SharePoint job ID and progress token are saved in the persisted migration checkpoint.
-6. A worker or scheduled caller invokes the polling procedure, which calls `GetMigrationJobProgress`, advances `NextToken`, updates job progress, and emits a WebSocket event.
+6. The BullMQ worker invokes `GetMigrationJobProgress`, advances `NextToken`, updates job progress, emits a WebSocket event, and requeues the next poll until `JobEnd` or `JobError`.
+
+## BullMQ worker
+
+The worker uses the `m365-sharepoint-migration` queue with concurrency 2, a limiter of 20 jobs per second, six exponential-backoff attempts per poll, and a five-second delay between successful polls. It starts with the Express process and is intentionally disabled when `REDIS_URL` is missing. In that state, package submission still works and the job checkpoint is persisted, but progress must be polled manually or after Redis is configured.
 
 ## Current limitation
 
-The adapter is implemented and protected behind tRPC, but it does not include a production background queue. Until a worker invokes the polling procedure, the API job will be submitted and checkpointed but progress will not advance automatically. Bulk packaging is currently sequential and should be moved to a bounded-concurrency worker for large tenants.
+The adapter and worker are implemented and protected behind tRPC. Bulk packaging is currently sequential and should be moved to a bounded-concurrency staging pipeline for large tenants. The Redis/BullMQ worker is required for automatic progress polling in production.
 
 ## References
 
