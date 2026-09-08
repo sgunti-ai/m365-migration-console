@@ -8,6 +8,13 @@
       "when": 1788659179843,
       "tag": "0000_lame_phalanx",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1788772117913,
+      "tag": "0001_real_sentry",
+      "breakpoints": true
     }
   ]
 }

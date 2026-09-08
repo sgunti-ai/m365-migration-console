@@ -10,6 +10,8 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerRealtime } from "../realtime";
 import { startMigrationWorker } from "../migrationWorker";
+import { registerLocalAuthRoutes } from "../localAuthRoutes";
+import { ensureBootstrapAdmin } from "../localAuth";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,6 +33,7 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  await ensureBootstrapAdmin();
   const app = express();
   const server = createServer(app);
   registerRealtime(server);
@@ -40,6 +43,7 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  registerLocalAuthRoutes(app);
   // tRPC API
   app.use(
     "/api/trpc",
