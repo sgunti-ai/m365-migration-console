@@ -1,0 +1,1 @@
+ALTER TABLE `tenant_connections` ADD `clientSecretCiphertext` text;

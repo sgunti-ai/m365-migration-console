@@ -9,6 +9,7 @@ export const ENV = {
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   redisUrl: process.env.REDIS_URL ?? "",
   bootstrapAdminPassword: process.env.BOOTSTRAP_ADMIN_PASSWORD ?? (process.env.NODE_ENV === "production" ? "" : "password"),
+  credentialEncryptionKey: process.env.CREDENTIAL_ENCRYPTION_KEY ?? (process.env.NODE_ENV === "production" ? "" : "development-only-credential-key-change-me"),
   graph: {
     sourceTenantId: process.env.MS_GRAPH_SOURCE_TENANT_ID ?? "",
     sourceClientId: process.env.MS_GRAPH_SOURCE_CLIENT_ID ?? "",

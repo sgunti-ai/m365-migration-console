@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { localAccounts, localSessions, tenantConnections, users, type TenantConnection, type User } from "../drizzle/schema";
 import { getDb } from "./db";
+import { encryptCredential } from "./credentialVault";
 import { ENV } from "./_core/env";
 
 const scrypt = promisify(scryptCallback);
@@ -14,11 +15,18 @@ const fallbackAccounts = new Map<string, { username: string; passwordHash: strin
 const fallbackSessions = new Map<string, { username: string; expiresAt: number }>();
 const fallbackConnections = new Map<string, TenantConnection>();
 
+export type PublicTenantConnection = Omit<TenantConnection, "clientSecretCiphertext"> & { hasClientSecret: boolean };
+
 export function validatePasswordPolicy(password: string) {
   return password.length >= 12 && /[A-Z]/.test(password) && /[a-z]/.test(password) && /\d/.test(password) && /[^A-Za-z0-9]/.test(password);
 }
 
 function hashToken(token: string) { return createHash("sha256").update(token).digest("hex"); }
+
+function toPublicConnection(connection: TenantConnection): PublicTenantConnection {
+  const { clientSecretCiphertext, ...publicConnection } = connection;
+  return { ...publicConnection, hasClientSecret: Boolean(clientSecretCiphertext) };
+}
 
 export async function hashPassword(password: string) {
   const salt = randomBytes(16).toString("hex");
@@ -42,6 +50,7 @@ function toUser(account: { username: string; displayName: string; role: "admin" 
 export async function ensureBootstrapAdmin() {
   const password = ENV.bootstrapAdminPassword;
   if (!password) throw new Error("BOOTSTRAP_ADMIN_PASSWORD must be configured before starting in production");
+  if (ENV.isProduction && !ENV.credentialEncryptionKey) throw new Error("CREDENTIAL_ENCRYPTION_KEY must be configured before starting in production");
   const db = await getDb();
   if (!db) {
     if (!fallbackAccounts.has("admin")) fallbackAccounts.set("admin", { username: "admin", passwordHash: await hashPassword(password), role: "admin", displayName: "Platform administrator", mustChangePassword: true, failedAttempts: 0 });
@@ -104,17 +113,38 @@ export async function revokeLocalSession(token: string | undefined) {
   await db.update(localSessions).set({ revokedAt: new Date() }).where(eq(localSessions.id, hashToken(token)));
 }
 
-export async function listTenantConnections(ownerOpenId: string) {
+export async function listTenantConnections(ownerOpenId: string): Promise<PublicTenantConnection[]> {
   const db = await getDb();
-  if (!db) return Array.from(fallbackConnections.values()).filter(item => item.ownerOpenId === ownerOpenId);
-  return db.select().from(tenantConnections).where(eq(tenantConnections.ownerOpenId, ownerOpenId));
+  if (!db) return Array.from(fallbackConnections.values()).filter(item => item.ownerOpenId === ownerOpenId).map(toPublicConnection);
+  return (await db.select().from(tenantConnections).where(eq(tenantConnections.ownerOpenId, ownerOpenId))).map(toPublicConnection);
 }
 
-export async function createTenantConnection(input: { ownerOpenId: string; label: string; direction: "source" | "target"; tenantId: string; clientId?: string; siteUrl?: string }) {
-  const connection = { id: `TEN-${randomBytes(5).toString("hex")}`, ...input, clientId: input.clientId ?? null, siteUrl: input.siteUrl ?? null, status: "Draft" as const };
+export async function createTenantConnection(input: { ownerOpenId: string; label: string; direction: "source" | "target"; tenantId: string; clientId?: string; clientSecret?: string; siteUrl?: string }) {
+  const connection = { id: `TEN-${randomBytes(5).toString("hex")}`, ownerOpenId: input.ownerOpenId, label: input.label, direction: input.direction, tenantId: input.tenantId, clientId: input.clientId ?? null, clientSecretCiphertext: encryptCredential(input.clientSecret ?? ""), siteUrl: input.siteUrl ?? null, status: "Draft" as const };
   const db = await getDb();
-  if (!db) { const now = new Date(); const value = { ...connection, createdAt: now, updatedAt: now }; fallbackConnections.set(connection.id, value); return value; }
+  if (!db) { const now = new Date(); const value = { ...connection, createdAt: now, updatedAt: now }; fallbackConnections.set(connection.id, value); return toPublicConnection(value); }
   await db.insert(tenantConnections).values(connection);
   const rows = await db.select().from(tenantConnections).where(eq(tenantConnections.id, connection.id)).limit(1);
-  return rows[0];
+  return rows[0] ? toPublicConnection(rows[0]) : undefined;
+}
+
+export async function getTenantConnection(ownerOpenId: string, id: string) {
+  const db = await getDb();
+  if (!db) return Array.from(fallbackConnections.values()).find(item => item.id === id && item.ownerOpenId === ownerOpenId) ?? null;
+  const rows = await db.select().from(tenantConnections).where(and(eq(tenantConnections.id, id), eq(tenantConnections.ownerOpenId, ownerOpenId))).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function updateTenantConnectionStatus(ownerOpenId: string, id: string, status: "Draft" | "Connected" | "Error") {
+  const db = await getDb();
+  if (!db) {
+    const existing = await getTenantConnection(ownerOpenId, id);
+    if (!existing) return null;
+    const updated = { ...existing, status, updatedAt: new Date() };
+    fallbackConnections.set(id, updated);
+    return toPublicConnection(updated);
+  }
+  await db.update(tenantConnections).set({ status, updatedAt: new Date() }).where(and(eq(tenantConnections.id, id), eq(tenantConnections.ownerOpenId, ownerOpenId)));
+  const updated = await getTenantConnection(ownerOpenId, id);
+  return updated ? toPublicConnection(updated) : null;
 }

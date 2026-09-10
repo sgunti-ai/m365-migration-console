@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createHash } from "node:crypto";
-import { createTenantConnection, ensureBootstrapAdmin, getLocalUserFromToken, hashPassword, listTenantConnections, loginLocal, revokeLocalSession, validatePasswordPolicy, verifyPassword, LOCAL_SESSION_COOKIE } from "./localAuth";
+import { createTenantConnection, ensureBootstrapAdmin, getLocalUserFromToken, hashPassword, listTenantConnections, loginLocal, revokeLocalSession, updateTenantConnectionStatus, validatePasswordPolicy, verifyPassword, LOCAL_SESSION_COOKIE } from "./localAuth";
+import { checkGraphHealthForConnection } from "./graph";
 import { eq } from "drizzle-orm";
 import { localAccounts } from "../drizzle/schema";
 import { getDb } from "./db";
@@ -68,9 +69,19 @@ export function registerLocalAuthRoutes(app: Express) {
   app.post("/api/workspace/tenant-connections", async (req, res) => {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
-    const { label, direction, tenantId, clientId, siteUrl } = req.body ?? {};
+    const { label, direction, tenantId, clientId, clientSecret, siteUrl } = req.body ?? {};
     if (typeof label !== "string" || !label.trim() || !["source", "target"].includes(direction) || typeof tenantId !== "string" || !tenantId.trim()) return setError(res, 400, "Label, direction, and tenant ID are required.");
-    const connection = await createTenantConnection({ ownerOpenId: user.openId, label: label.trim(), direction, tenantId: tenantId.trim(), clientId: typeof clientId === "string" ? clientId.trim() : undefined, siteUrl: typeof siteUrl === "string" ? siteUrl.trim() : undefined });
+    if (clientSecret !== undefined && typeof clientSecret !== "string") return setError(res, 400, "Client secret must be a string.");
+    const connection = await createTenantConnection({ ownerOpenId: user.openId, label: label.trim(), direction, tenantId: tenantId.trim(), clientId: typeof clientId === "string" ? clientId.trim() : undefined, clientSecret: typeof clientSecret === "string" ? clientSecret : undefined, siteUrl: typeof siteUrl === "string" ? siteUrl.trim() : undefined });
     res.status(201).json({ ok: true, connection });
+  });
+
+  app.post("/api/workspace/tenant-connections/:id/validate", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const health = await checkGraphHealthForConnection(user.openId, req.params.id);
+    await updateTenantConnectionStatus(user.openId, req.params.id, health.status === "connected" ? "Connected" : health.status === "error" ? "Error" : "Draft");
+    const statusCode = health.status === "connected" ? 200 : health.status === "not_configured" ? 400 : 502;
+    res.status(statusCode).json({ ok: health.status === "connected", health, error: health.status === "connected" ? undefined : health.detail });
   });
 }

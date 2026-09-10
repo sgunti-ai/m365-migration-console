@@ -19,7 +19,11 @@ For local development, the bootstrap password defaults to the requested temporar
 
 ## Tenant connections
 
-Each connection stores only non-secret configuration metadata: a display label, source/destination direction, Microsoft Entra tenant ID, optional app registration client ID, optional SharePoint site URL, and connection status. Client secrets and certificates are intentionally not stored in the browser or in this table. They should be supplied through server-side project secrets or a future encrypted credential vault adapter.
+Each connection stores a display label, source/destination direction, Microsoft Entra tenant ID, app registration client ID, optional SharePoint site URL, connection status, and an encrypted client-secret ciphertext. Client secrets are encrypted server-side with AES-256-GCM using `CREDENTIAL_ENCRYPTION_KEY`; the plaintext is never returned by the list or create APIs. Production startup requires both `BOOTSTRAP_ADMIN_PASSWORD` and `CREDENTIAL_ENCRYPTION_KEY`.
+
+After saving a connection, an operator can select **Validate with Microsoft Graph**. The server decrypts the secret only in memory, requests an app-only token from the connection's tenant-specific Microsoft identity endpoint, calls Microsoft Graph `/v1.0/organization`, and updates the connection status to `Connected`, `Error`, or `Draft`. A successful response also provides the tenant organization display name to the UI. No credentials are sent to Graph from the browser.
+
+Generate a high-entropy encryption key for a deployment, store it only as a server secret, and keep it stable for the lifetime of the encrypted records. Rotating the key requires a planned decrypt-and-re-encrypt migration; do not replace it casually or existing credentials will become unreadable.
 
 The following endpoints are available:
 
@@ -30,6 +34,7 @@ The following endpoints are available:
 | GET | `/api/auth/me` | Return the current local user |
 | POST | `/api/auth/change-password` | Change the local password |
 | GET | `/api/workspace/tenant-connections` | List the signed-in user's tenant connections |
-| POST | `/api/workspace/tenant-connections` | Add a source or destination tenant connection |
+| POST | `/api/workspace/tenant-connections` | Add a source or destination tenant connection; accepts `clientSecret` only over the authenticated HTTPS request |
+| POST | `/api/workspace/tenant-connections/:id/validate` | Validate one connection against Microsoft Graph and update its status |
 
 The existing Manus OAuth flow remains available for environments that use Manus identity. Azure Entra, SAML, email verification, password-reset email delivery, TOTP, and enterprise group-to-role synchronization remain provider adapters that require deployment-specific credentials and policy decisions.

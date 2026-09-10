@@ -45,6 +45,7 @@ export const tenantConnections = mysqlTable("tenant_connections", {
   direction: mysqlEnum("direction", ["source", "target"]).notNull(),
   tenantId: varchar("tenantId", { length: 128 }).notNull(),
   clientId: varchar("clientId", { length: 128 }),
+  clientSecretCiphertext: text("clientSecretCiphertext"),
   siteUrl: varchar("siteUrl", { length: 512 }),
   status: mysqlEnum("status", ["Draft", "Connected", "Error"]).default("Draft").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
