@@ -52,6 +52,66 @@ export const tenantConnections = mysqlTable("tenant_connections", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+const migrationPhaseValues = ["Assessment", "Mapping", "Planning", "Pilot", "Migration", "Validation", "Cutover", "Completed"] as const;
+
+export const migrationProjects = mysqlTable("migration_projects", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  name: varchar("name", { length: 160 }).notNull(),
+  description: text("description"),
+  sourceConnectionId: varchar("sourceConnectionId", { length: 32 }),
+  targetConnectionId: varchar("targetConnectionId", { length: 32 }),
+  phase: mysqlEnum("phase", migrationPhaseValues).default("Assessment").notNull(),
+  status: mysqlEnum("status", ["Draft", "Active", "Paused", "Completed", "Archived"]).default("Draft").notNull(),
+  readinessScore: int("readinessScore").default(0).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const migrationWaves = mysqlTable("migration_waves", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  projectId: varchar("projectId", { length: 32 }).notNull(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  name: varchar("name", { length: 160 }).notNull(),
+  sequence: int("sequence").default(1).notNull(),
+  phase: mysqlEnum("phase", migrationPhaseValues).default("Planning").notNull(),
+  status: mysqlEnum("status", ["Planned", "Ready", "Running", "Paused", "Completed", "Needs review", "Blocked"]).default("Planned").notNull(),
+  runMode: mysqlEnum("runMode", ["Full", "Incremental", "Cutover"]).default("Full").notNull(),
+  itemsTotal: int("itemsTotal").default(0).notNull(),
+  itemsDone: int("itemsDone").default(0).notNull(),
+  progress: int("progress").default(0).notNull(),
+  concurrency: varchar("concurrency", { length: 32 }).default("Balanced").notNull(),
+  validationPolicy: varchar("validationPolicy", { length: 64 }).default("Standard").notNull(),
+  approvalState: mysqlEnum("approvalState", ["Not required", "Pending", "Approved", "Rejected"]).default("Pending").notNull(),
+  scheduledAt: timestamp("scheduledAt"),
+  changeFreezeAt: timestamp("changeFreezeAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const migrationWavePopulations = mysqlTable("migration_wave_populations", {
+  id: int("id").autoincrement().primaryKey(),
+  waveId: varchar("waveId", { length: 32 }).notNull(),
+  sourceDriveId: varchar("sourceDriveId", { length: 255 }),
+  rootItemId: varchar("rootItemId", { length: 255 }),
+  sourceUserId: varchar("sourceUserId", { length: 255 }),
+  targetUserId: varchar("targetUserId", { length: 255 }),
+  sourcePath: varchar("sourcePath", { length: 1024 }),
+  targetPath: varchar("targetPath", { length: 1024 }),
+  itemCount: int("itemCount").default(0).notNull(),
+  status: mysqlEnum("status", ["Pending", "Scanned", "Ready", "Migrated", "Needs review"]).default("Pending").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const migrationWaveDependencies = mysqlTable("migration_wave_dependencies", {
+  id: int("id").autoincrement().primaryKey(),
+  waveId: varchar("waveId", { length: 32 }).notNull(),
+  dependsOnWaveId: varchar("dependsOnWaveId", { length: 32 }).notNull(),
+  dependencyType: mysqlEnum("dependencyType", ["Completion", "Approval", "Mapping"]).default("Completion").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
 export const migrationJobs = mysqlTable("migration_jobs", {
   id: varchar("id", { length: 32 }).primaryKey(),
   name: varchar("name", { length: 160 }).notNull(),
@@ -71,6 +131,9 @@ export const migrationJobs = mysqlTable("migration_jobs", {
   scheduledAt: timestamp("scheduledAt"),
   checkpoint: text("checkpoint"),
   lastError: text("lastError"),
+  projectId: varchar("projectId", { length: 32 }),
+  waveId: varchar("waveId", { length: 32 }),
+  phase: mysqlEnum("phase", migrationPhaseValues).default("Migration").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -88,6 +151,12 @@ export type InsertUser = typeof users.$inferInsert;
 export type LocalAccount = typeof localAccounts.$inferSelect;
 export type TenantConnection = typeof tenantConnections.$inferSelect;
 export type InsertTenantConnection = typeof tenantConnections.$inferInsert;
+export type MigrationProject = typeof migrationProjects.$inferSelect;
+export type InsertMigrationProject = typeof migrationProjects.$inferInsert;
+export type MigrationWave = typeof migrationWaves.$inferSelect;
+export type InsertMigrationWave = typeof migrationWaves.$inferInsert;
+export type MigrationWavePopulation = typeof migrationWavePopulations.$inferSelect;
+export type MigrationWaveDependency = typeof migrationWaveDependencies.$inferSelect;
 export type MigrationJob = typeof migrationJobs.$inferSelect;
 export type InsertMigrationJob = typeof migrationJobs.$inferInsert;
 export type MigrationJobEvent = typeof migrationJobEvents.$inferSelect;

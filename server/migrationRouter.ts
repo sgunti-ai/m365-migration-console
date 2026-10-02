@@ -32,6 +32,9 @@ export const migrationRouter = router({
       schedule: z.string().max(64).optional(),
       scheduledAt: z.date().nullable().optional(),
       itemsTotal: z.number().int().min(0).default(0),
+      projectId: z.string().max(32).optional(),
+      waveId: z.string().max(32).optional(),
+      phase: z.enum(["Assessment", "Mapping", "Planning", "Pilot", "Migration", "Validation", "Cutover", "Completed"]).default("Migration"),
     })).mutation(({ ctx, input }) => createMigrationJob({
       id: `JOB-${nanoid(8).toUpperCase()}`,
       ...input,

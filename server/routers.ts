@@ -3,6 +3,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { migrationRouter } from "./migrationRouter";
+import { migrationPlanningRouter } from "./migrationPlanningRouter";
 import { LOCAL_SESSION_COOKIE, revokeLocalSession } from "./localAuth";
 
 export const appRouter = router({
@@ -23,6 +24,7 @@ export const appRouter = router({
   }),
 
   migration: migrationRouter,
+  planning: migrationPlanningRouter,
 
   // TODO: add feature routers here, e.g.
   // todo: router({

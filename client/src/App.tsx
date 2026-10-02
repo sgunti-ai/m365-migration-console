@@ -49,6 +49,7 @@ import {
   Play,
   Plus,
   RefreshCcw,
+  Route,
   Search,
   Settings,
   ShieldCheck,
@@ -71,11 +72,13 @@ import { Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContaine
 import { StatusBadge, LiveDot } from "@/components/StatusBadge";
 import { Toaster } from "@/components/ui/sonner";
 import { Dashboard as ComprehensiveDashboard } from "@/components/dashboard/Dashboard";
+import { ProjectPlanning } from "@/components/migration/ProjectPlanning";
 import { activity, auditEvents, discoveryUsers, errorRows, migrationJobs, mockCreateJob, mockGetOverview, overviewStats, statusBreakdown, throughputData, type MigrationJob } from "@/lib/mockApi";
 
 type NavItem = { label: string; icon: typeof LayoutDashboard; path: string; count?: string; section?: string };
 const navItems: NavItem[] = [
   { label: "Overview", icon: LayoutDashboard, path: "/" },
+  { label: "Migration planning", icon: Route, path: "/planning", count: "New" },
   { label: "Migration jobs", icon: FolderKanban, path: "/jobs", count: "12" },
   { label: "Discovery & mapping", icon: Network, path: "/discovery", count: "2.4k" },
   { label: "Errors & remediation", icon: AlertCircle, path: "/errors", count: "47" },
@@ -93,6 +96,7 @@ const workloadOptions: Array<{ label: string; desc: string; icon: LucideIcon; en
 
 const pageMeta: Record<string, { eyebrow: string; title: string; description: string }> = {
   overview: { eyebrow: "Operations center", title: "Migration workspace", description: "Here's what is happening across your migration workspace." },
+  planning: { eyebrow: "Program planning", title: "Migration planning", description: "Structure discovery, pilot waves, migration runs, validation, and cutover." },
   jobs: { eyebrow: "Migration operations", title: "Migration jobs", description: "Plan, run, and monitor your tenant-to-tenant workloads." },
   discovery: { eyebrow: "Readiness workspace", title: "Discovery & mapping", description: "Resolve identities and validate workloads before you move." },
   errors: { eyebrow: "Remediation queue", title: "Errors & remediation", description: "Triage exceptions and get blocked users moving again." },
@@ -150,6 +154,7 @@ function App() {
           <div className="mx-auto max-w-[1500px] p-4 sm:p-6 xl:p-8">
             <PageHeader meta={meta} pageKey={pageKey} go={go} setJobWizardOpen={setJobWizardOpen} />
             {pageKey === "overview" && <ComprehensiveDashboard onNewJob={() => setJobWizardOpen(true)} onRefresh={() => { setLastRefresh("just now"); toast.success("Workspace data refreshed"); }} />}
+            {pageKey === "planning" && <ProjectPlanning />}
             {pageKey === "jobs" && <JobsPage jobs={jobs} authenticated={isAuthenticated} onNewJob={() => setJobWizardOpen(true)} />}
             {pageKey === "discovery" && <DiscoveryPage />}
             {pageKey === "errors" && <ErrorsPage />}

@@ -47,6 +47,9 @@ function fallbackJob(input: InsertMigrationJob): MigrationJob {
     scheduledAt: input.scheduledAt ?? null,
     checkpoint: input.checkpoint ?? null,
     lastError: input.lastError ?? null,
+    projectId: input.projectId ?? null,
+    waveId: input.waveId ?? null,
+    phase: input.phase ?? "Migration",
     createdAt: now,
     updatedAt: now,
   };
