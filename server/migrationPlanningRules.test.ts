@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canTransitionWave, migrationPhases, nextMigrationPhase } from "./migrationPlanningRules";
+import { canTransitionWave, migrationPhases, nextMigrationPhase, runbookCompletionPercent } from "./migrationPlanningRules";
 
 describe("migration planning rules", () => {
   it("advances project phases without exceeding Completed", () => {
@@ -20,5 +20,11 @@ describe("migration planning rules", () => {
     expect(canTransitionWave("Running", "Completed", "Approved")).toBe(true);
     expect(canTransitionWave("Needs review", "Completed", "Approved")).toBe(true);
     expect(canTransitionWave("Planned", "Completed", "Approved")).toBe(false);
+  });
+
+  it("calculates runbook progress from completed gates", () => {
+    expect(runbookCompletionPercent([])).toBe(0);
+    expect(runbookCompletionPercent(["Completed", "Pending", "Blocked", "Completed"])).toBe(50);
+    expect(runbookCompletionPercent(["Completed", "Completed"])).toBe(100);
   });
 });

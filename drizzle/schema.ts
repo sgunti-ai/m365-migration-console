@@ -112,6 +112,36 @@ export const migrationWaveDependencies = mysqlTable("migration_wave_dependencies
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const migrationRunbooks = mysqlTable("migration_runbooks", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  projectId: varchar("projectId", { length: 32 }).notNull(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  targetWaveId: varchar("targetWaveId", { length: 32 }),
+  name: varchar("name", { length: 160 }).notNull(),
+  status: mysqlEnum("status", ["Draft", "Ready", "In progress", "Completed", "Blocked"]).default("Draft").notNull(),
+  scheduledAt: timestamp("scheduledAt"),
+  changeFreezeAt: timestamp("changeFreezeAt"),
+  rollbackWindowMinutes: int("rollbackWindowMinutes").default(60).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const migrationRunbookSteps = mysqlTable("migration_runbook_steps", {
+  id: int("id").autoincrement().primaryKey(),
+  runbookId: varchar("runbookId", { length: 32 }).notNull(),
+  sequence: int("sequence").notNull(),
+  category: varchar("category", { length: 64 }).notNull(),
+  title: varchar("title", { length: 180 }).notNull(),
+  description: text("description").notNull(),
+  ownerRole: varchar("ownerRole", { length: 96 }).notNull(),
+  status: mysqlEnum("status", ["Pending", "In progress", "Completed", "Blocked", "Skipped"]).default("Pending").notNull(),
+  requiresEvidence: tinyint("requiresEvidence").default(0).notNull(),
+  evidence: text("evidence"),
+  completedAt: timestamp("completedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 export const migrationJobs = mysqlTable("migration_jobs", {
   id: varchar("id", { length: 32 }).primaryKey(),
   name: varchar("name", { length: 160 }).notNull(),
@@ -157,6 +187,10 @@ export type MigrationWave = typeof migrationWaves.$inferSelect;
 export type InsertMigrationWave = typeof migrationWaves.$inferInsert;
 export type MigrationWavePopulation = typeof migrationWavePopulations.$inferSelect;
 export type MigrationWaveDependency = typeof migrationWaveDependencies.$inferSelect;
+export type MigrationRunbook = typeof migrationRunbooks.$inferSelect;
+export type InsertMigrationRunbook = typeof migrationRunbooks.$inferInsert;
+export type MigrationRunbookStep = typeof migrationRunbookSteps.$inferSelect;
+export type InsertMigrationRunbookStep = typeof migrationRunbookSteps.$inferInsert;
 export type MigrationJob = typeof migrationJobs.$inferSelect;
 export type InsertMigrationJob = typeof migrationJobs.$inferInsert;
 export type MigrationJobEvent = typeof migrationJobEvents.$inferSelect;

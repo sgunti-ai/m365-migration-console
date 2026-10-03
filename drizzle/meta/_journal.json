@@ -29,6 +29,13 @@
       "when": 1790953894677,
       "tag": "0003_fuzzy_punisher",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1791039223621,
+      "tag": "0004_volatile_justice",
+      "breakpoints": true
     }
   ]
 }

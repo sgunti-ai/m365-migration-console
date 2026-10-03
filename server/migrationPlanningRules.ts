@@ -15,3 +15,8 @@ export function canTransitionWave(status: MigrationWaveStatus, next: MigrationWa
   if (next === "Completed") return status === "Running" || status === "Needs review";
   return true;
 }
+
+export function runbookCompletionPercent(statuses: string[]) {
+  if (!statuses.length) return 0;
+  return Math.round((statuses.filter((status) => status === "Completed").length / statuses.length) * 100);
+}
