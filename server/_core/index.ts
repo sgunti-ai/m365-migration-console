@@ -12,6 +12,7 @@ import { registerRealtime } from "../realtime";
 import { startMigrationWorker } from "../migrationWorker";
 import { registerLocalAuthRoutes } from "../localAuthRoutes";
 import { ensureBootstrapAdmin } from "../localAuth";
+import { stripUntrustedIdentityHeaders } from "./security";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -36,6 +37,13 @@ async function startServer() {
   await ensureBootstrapAdmin();
   const app = express();
   const server = createServer(app);
+  // Never allow caller-controlled admin identity headers to reach route
+  // handlers. Authentication is derived only from verified session cookies or
+  // bearer tokens, then resolved to a database-backed user record.
+  app.use((req, _res, next) => {
+    stripUntrustedIdentityHeaders(req.headers);
+    next();
+  });
   registerRealtime(server);
   startMigrationWorker();
   // Configure body parser with larger size limit for file uploads
