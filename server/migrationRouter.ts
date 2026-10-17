@@ -2,10 +2,13 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "./_core/trpc";
-import { checkGraphHealth, discoverGraphUsers } from "./graph";
+import { checkGraphHealth, checkGraphHealthForConnection, discoverGraphUsers } from "./graph";
 import { appendMigrationEvent, createMigrationJob, getMigrationJob, listMigrationEvents, listMigrationJobs, updateMigrationJob } from "./migrationRepo";
 import { enumerateOneDriveItems, getSharePointMigrationProgress, stageOneDrivePackage, submitSharePointMigration } from "./sharepointMigration";
 import { enqueueSharePointPolling } from "./migrationWorker";
+import { buildPreflightChecks, summarizePreflight } from "./migrationPreflight";
+import { createRemediationItems, createValidation, getLatestValidation, getRemediationItem, listRemediationItems, updateRemediationItem } from "./migrationPreflightRepo";
+import { listTenantConnections } from "./localAuth";
 
 const workloads = z.enum(["OneDrive", "SharePoint", "Exchange", "Teams"]);
 const status = z.enum(["Queued", "Running", "Paused", "Completed", "Needs review", "Failed", "Cancelled"]);
@@ -45,6 +48,10 @@ export const migrationRouter = router({
     })),
     control: protectedProcedure.input(z.object({ jobId: z.string().min(1), action: z.enum(["pause", "resume", "retry", "cancel"]) })).mutation(async ({ ctx, input }) => {
       const job = assertOwner(await getMigrationJob(input.jobId), ctx.user.openId);
+      if (input.action === "resume" || input.action === "retry") {
+        const validation = await getLatestValidation(job.id, ctx.user.openId);
+        if (!validation || validation.status !== "Passed") throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Run and pass pre-flight validation before resuming or retrying this job." });
+      }
       const next = input.action === "pause" ? "Paused" : input.action === "cancel" ? "Cancelled" : "Running";
       const checkpoint = input.action === "pause" ? JSON.stringify({ progress: job.progress, itemsDone: job.itemsDone, pausedAt: new Date().toISOString() }) : job.checkpoint;
       const updated = await updateMigrationJob(job.id, { status: next, checkpoint, eta: input.action === "cancel" ? "Cancelled" : input.action === "pause" ? "Paused" : "Resuming from checkpoint", lastError: input.action === "retry" ? null : job.lastError });
@@ -54,6 +61,50 @@ export const migrationRouter = router({
     checkpoint: protectedProcedure.input(z.object({ jobId: z.string().min(1), progress: z.number().int().min(0).max(100), itemsDone: z.number().int().min(0), itemsTotal: z.number().int().min(0), throughputGbHr: z.number().int().min(0).default(0), checkpoint: z.record(z.string(), z.unknown()).optional(), status: status.optional() })).mutation(async ({ ctx, input }) => {
       const job = assertOwner(await getMigrationJob(input.jobId), ctx.user.openId);
       return updateMigrationJob(job.id, { progress: input.progress, itemsDone: input.itemsDone, itemsTotal: input.itemsTotal, throughputGbHr: input.throughputGbHr, checkpoint: input.checkpoint ? JSON.stringify(input.checkpoint) : job.checkpoint, status: input.status ?? job.status, eta: input.progress >= 100 ? "Complete" : job.eta });
+    }),
+  }),
+  preflight: router({
+    run: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+      const job = assertOwner(await getMigrationJob(input.jobId), ctx.user.openId);
+      const startedAt = new Date();
+      const connections = await listTenantConnections(ctx.user.openId);
+      const health = await Promise.all(((["source", "target"] as const)).map(async (direction) => {
+        const connection = connections.find((item) => item.direction === direction);
+        return connection ? checkGraphHealthForConnection(ctx.user.openId, connection.id) : checkGraphHealth(direction);
+      }));
+      const checks = buildPreflightChecks(job, health);
+      const summary = summarizePreflight(checks);
+      const validation = await createValidation({ id: `VAL-${nanoid(10).toUpperCase()}`, jobId: job.id, ownerOpenId: ctx.user.openId, workload: job.workload, status: summary.status, score: summary.score, checks: JSON.stringify(checks), startedAt, completedAt: new Date() });
+      const existing = await listRemediationItems(ctx.user.openId, { jobId: job.id });
+      const pendingCodes = new Set(existing.filter((item) => item.status === "Open" || item.status === "In progress").map((item) => item.code));
+      const newItems = await createRemediationItems(checks.filter((check) => check.status !== "Passed" && !pendingCodes.has(check.code)).map((check) => ({ jobId: job.id, ownerOpenId: ctx.user.openId, workload: job.workload, code: check.code, entity: `${job.name} · ${check.title}`, severity: check.severity, status: "Open" as const, retryable: check.retryable ? 1 : 0, recommendation: check.recommendation, attempts: 0, lastError: check.detail, nextRetryAt: null })));
+      const updatedJob = summary.status === "Passed" ? job : await updateMigrationJob(job.id, { status: "Needs review", eta: `Pre-flight ${summary.status.toLowerCase()}`, lastError: `${summary.needsReview + summary.blocked} pre-flight check(s) need attention.` });
+      await appendMigrationEvent(job.id, "preflight.completed", { validationId: validation.id, summary, health, checkCodes: checks.map((check) => check.code), at: new Date().toISOString() });
+      return { validation, summary, remediationItems: newItems, job: updatedJob };
+    }),
+    latest: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).query(async ({ ctx, input }) => {
+      assertOwner(await getMigrationJob(input.jobId), ctx.user.openId);
+      const validation = await getLatestValidation(input.jobId, ctx.user.openId);
+      const remediationItems = await listRemediationItems(ctx.user.openId, { jobId: input.jobId });
+      return { validation, remediationItems };
+    }),
+  }),
+  remediation: router({
+    list: protectedProcedure.input(z.object({ jobId: z.string().min(1).optional(), workload: workloads.optional(), status: z.enum(["Open", "In progress", "Resolved", "Waived"]).optional() }).optional()).query(({ ctx, input }) => listRemediationItems(ctx.user.openId, input)),
+    resolve: protectedProcedure.input(z.object({ itemId: z.number().int().positive(), status: z.enum(["Resolved", "Waived"]) })).mutation(async ({ ctx, input }) => {
+      const item = await getRemediationItem(input.itemId, ctx.user.openId);
+      if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Remediation item not found" });
+      const updated = await updateRemediationItem(item.id, ctx.user.openId, { status: input.status, nextRetryAt: null });
+      await appendMigrationEvent(item.jobId, "remediation.resolved", { itemId: item.id, status: input.status, code: item.code, at: new Date().toISOString() });
+      return updated;
+    }),
+    retry: protectedProcedure.input(z.object({ itemId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
+      const item = await getRemediationItem(input.itemId, ctx.user.openId);
+      if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "Remediation item not found" });
+      if (!item.retryable) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "This remediation is not safe to retry automatically" });
+      const updated = await updateRemediationItem(item.id, ctx.user.openId, { status: "In progress", attempts: item.attempts + 1, lastError: null, nextRetryAt: new Date() });
+      await appendMigrationEvent(item.jobId, "remediation.retry_queued", { itemId: item.id, attempt: item.attempts + 1, code: item.code, at: new Date().toISOString() });
+      return updated;
     }),
   }),
   sharePoint: router({

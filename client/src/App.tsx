@@ -63,7 +63,6 @@ import {
   Upload,
   UserRound,
   Users,
-  WandSparkles,
   X,
   Zap,
   type LucideIcon,
@@ -75,7 +74,9 @@ import { Dashboard as ComprehensiveDashboard } from "@/components/dashboard/Dash
 import { ProjectPlanning } from "@/components/migration/ProjectPlanning";
 import { OneDriveStrategy } from "@/components/migration/OneDriveStrategy";
 import { WorkloadPlaybook } from "@/components/migration/WorkloadPlaybook";
-import { activity, auditEvents, discoveryUsers, errorRows, migrationJobs, mockCreateJob, mockGetOverview, overviewStats, statusBreakdown, throughputData, type MigrationJob } from "@/lib/mockApi";
+import { PreflightPanel } from "@/components/migration/PreflightPanel";
+import { RemediationQueue } from "@/components/migration/RemediationQueue";
+import { activity, auditEvents, discoveryUsers, migrationJobs, mockCreateJob, mockGetOverview, overviewStats, statusBreakdown, throughputData, type MigrationJob } from "@/lib/mockApi";
 
 type NavItem = { label: string; icon: typeof LayoutDashboard; path: string; count?: string; section?: string };
 const navItems: NavItem[] = [
@@ -157,7 +158,7 @@ function App() {
             <PageHeader meta={meta} pageKey={pageKey} go={go} setJobWizardOpen={setJobWizardOpen} />
             {pageKey === "overview" && <ComprehensiveDashboard onNewJob={() => setJobWizardOpen(true)} onRefresh={() => { setLastRefresh("just now"); toast.success("Workspace data refreshed"); }} />}
             {pageKey === "planning" && <ProjectPlanning />}
-            {pageKey === "jobs" && <JobsPage jobs={jobs} authenticated={isAuthenticated} onNewJob={() => setJobWizardOpen(true)} />}
+            {pageKey === "jobs" && <JobsPage jobs={jobs} authenticated={isAuthenticated} liveJobs={Boolean(persistedJobsQuery.data?.length)} onNewJob={() => setJobWizardOpen(true)} />}
             {pageKey === "discovery" && <DiscoveryPage />}
             {pageKey === "errors" && <ErrorsPage />}
             {pageKey === "reports" && <ReportsPage />}
@@ -270,10 +271,11 @@ function ActivityCard({ onRefresh }: { onRefresh: () => void }) {
   return <div className="console-card overflow-hidden"><div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Recent activity</h2><p className="mt-1 text-xs text-muted-foreground">Live workspace events</p></div><button onClick={onRefresh} className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Refresh activity"><RefreshCcw size={14} /></button></div><div className="divide-y divide-border/70">{activity.map((item) => <div key={item.title} className="flex gap-3 px-5 py-4"><div className={classNames("mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full", item.type === "success" ? "bg-teal-400/10 text-teal-300" : item.type === "warning" ? "bg-amber-400/10 text-amber-300" : item.type === "error" ? "bg-rose-400/10 text-rose-300" : "bg-blue-400/10 text-blue-300")}>{item.type === "success" ? <CheckCircle2 size={14} /> : item.type === "warning" ? <AlertCircle size={14} /> : item.type === "error" ? <AlertCircle size={14} /> : <Activity size={14} />}</div><div className="min-w-0"><div className="text-xs font-semibold text-foreground">{item.title}</div><div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{item.detail}</div></div></div>)}</div><button onClick={() => toast.info("Activity history is available in the Audit log")} className="flex w-full items-center justify-center gap-1.5 border-t border-border py-3 text-[11px] font-bold text-primary hover:bg-muted">View activity log <ArrowRight size={13} /></button></div>;
 }
 
-function JobsPage({ jobs, authenticated, onNewJob }: { jobs: MigrationJob[]; authenticated: boolean; onNewJob: () => void }) {
+function JobsPage({ jobs, authenticated, liveJobs, onNewJob }: { jobs: MigrationJob[]; authenticated: boolean; liveJobs: boolean; onNewJob: () => void }) {
   const [filter, setFilter] = useState("All jobs");
   const filtered = filter === "All jobs" ? jobs : jobs.filter((j) => j.status === filter);
-  return <div className="space-y-5"><OneDriveStrategy jobs={jobs} onNewJob={onNewJob} /><div className="console-card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:border-ring sm:w-64" placeholder="Search jobs" /></div><select value={filter} onChange={(e) => setFilter(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none focus:border-ring"><option>All jobs</option><option>Running</option><option>Paused</option><option>Completed</option><option>Needs review</option><option>Queued</option><option>Failed</option></select></div><div className="flex items-center gap-2 text-[11px] text-muted-foreground"><span className="hidden sm:inline">{jobs.length} total jobs</span><button onClick={onNewJob} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 font-bold text-primary-foreground"><Plus size={14} />New job</button></div></div><JobsTable compact={false} jobs={filtered} authenticated={authenticated} onNewJob={onNewJob} /></div>;
+  const focusJob = liveJobs ? jobs.find((job) => job.status === "Needs review" || job.status === "Paused" || job.status === "Failed") ?? jobs[0] : null;
+  return <div className="space-y-5"><OneDriveStrategy jobs={jobs} onNewJob={onNewJob} />{focusJob && <PreflightPanel jobId={focusJob.id} compact enabled={authenticated} />}<div className="console-card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex items-center gap-2"><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" /><input className="h-9 w-full rounded-lg border border-border bg-background pl-9 pr-3 text-xs outline-none placeholder:text-muted-foreground focus:border-ring sm:w-64" placeholder="Search jobs" /></div><select value={filter} onChange={(e) => setFilter(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none focus:border-ring"><option>All jobs</option><option>Running</option><option>Paused</option><option>Completed</option><option>Needs review</option><option>Queued</option><option>Failed</option></select></div><div className="flex items-center gap-2 text-[11px] text-muted-foreground"><span className="hidden sm:inline">{jobs.length} total jobs</span><button onClick={onNewJob} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 font-bold text-primary-foreground"><Plus size={14} />New job</button></div></div><JobsTable compact={false} jobs={filtered} authenticated={authenticated} onNewJob={onNewJob} /></div>;
 }
 
 function DiscoveryPage() {
@@ -286,9 +288,7 @@ function DiscoveryPage() {
 }
 
 function ErrorsPage() {
-  const [severity, setSeverity] = useState("All severities");
-  const filtered = severity === "All severities" ? errorRows : errorRows.filter((r) => r.severity === severity);
-  return <div className="space-y-5"><div className="grid gap-4 sm:grid-cols-4"><MiniStat label="Open exceptions" value="47" detail="Across 4 jobs" icon={AlertCircle} tone="rose" /><MiniStat label="High severity" value="6" detail="Needs action now" icon={ShieldCheck} tone="rose" /><MiniStat label="Auto-retry ready" value="28" detail="Can be replayed" icon={RefreshCcw} tone="blue" /><MiniStat label="Resolved today" value="19" detail="+6 vs yesterday" icon={CheckCircle2} tone="teal" /></div><div className="console-card overflow-hidden"><div className="flex flex-col justify-between gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-center"><div><h2 className="font-['Space_Grotesk'] text-sm font-bold">Exception queue</h2><p className="mt-1 text-xs text-muted-foreground">Prioritized by severity and operational impact</p></div><div className="flex items-center gap-2"><select value={severity} onChange={(e) => setSeverity(e.target.value)} className="h-9 rounded-lg border border-border bg-background px-3 text-xs font-semibold outline-none"><option>All severities</option><option>High</option><option>Medium</option><option>Low</option></select><button onClick={() => toast.success("Auto-remediation started", { description: "28 retry-safe items have been queued." })} className="flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-xs font-bold text-primary-foreground"><WandSparkles size={14} />Auto-remediate</button></div></div><div className="overflow-x-auto"><table className="w-full min-w-[980px] text-left"><thead className="bg-muted/40 text-[10px] font-bold uppercase tracking-[.12em] text-muted-foreground"><tr><th className="px-5 py-3">Exception</th><th className="px-3 py-3">Entity</th><th className="px-3 py-3">Job</th><th className="px-3 py-3">Severity</th><th className="px-3 py-3">Last seen</th><th className="px-5 py-3 text-right">Remediation</th></tr></thead><tbody className="divide-y divide-border/70">{filtered.map((row) => <tr key={row.code} className="data-row"><td className="px-5 py-4"><div className="flex items-start gap-3"><div className={classNames("mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg", row.severity === "High" ? "bg-rose-400/10 text-rose-300" : row.severity === "Medium" ? "bg-amber-400/10 text-amber-300" : "bg-slate-400/10 text-slate-300")}><AlertCircle size={14} /></div><div><div className="font-mono text-[11px] font-bold text-primary">{row.code}</div><div className="mt-1 max-w-[360px] text-xs font-semibold leading-relaxed">{row.message}</div></div></div></td><td className="px-3 py-4 text-xs text-muted-foreground">{row.entity}</td><td className="px-3 py-4 font-mono text-[11px] text-muted-foreground">{row.job}</td><td className="px-3 py-4"><StatusBadge status={row.severity} /></td><td className="px-3 py-4 text-xs text-muted-foreground">{row.lastSeen}</td><td className="px-5 py-4 text-right"><button onClick={() => toast.success(`${row.action} queued`, { description: row.entity })} className="rounded-lg border border-border bg-card px-2.5 py-1.5 text-[11px] font-bold hover:bg-muted">{row.action}</button></td></tr>)}</tbody></table></div></div></div>;
+  return <RemediationQueue />;
 }
 
 function ReportsPage() {

@@ -1,12 +1,32 @@
 # Enhanced workload migration playbooks
 
-Porterline now presents a separate, gate-driven playbook for OneDrive, SharePoint, Exchange, and Teams in the New Migration Job wizard. The playbooks deliberately do not treat every workload as the same copy operation.
+Porterline presents a separate, gate-driven playbook for OneDrive, SharePoint, Exchange, and Teams in the New Migration Job wizard. The playbooks deliberately do not treat every workload as the same copy operation.
 
 ## Shared control model
 
 Every workload follows six control phases: inventory, target preparation, identity and dependency readiness, pilot, execution/cutover, and validation/closeout. A phase exposes a gate and concrete checks. Operators can move between phases in the wizard, but the migration service should only release the next operational phase after the current gate is passed.
 
 Microsoft's current tenant-to-tenant planning guidance identifies identity mapping, licensing, coexistence, and workload dependencies as cross-workload concerns. It specifically calls out that Teams content depends on Exchange mailboxes and that OneDrive and SharePoint share permission considerations. [1]
+
+## Pre-flight validation API
+
+Pre-flight validation is owner-scoped and persisted per migration job:
+
+- `migration.preflight.run({ jobId })` runs the source and target Graph health checks, identity and batch checks, and workload-specific checks. It returns the validation record, a summary, newly-created remediation items, and the job state.
+- `migration.preflight.latest({ jobId })` returns the most recent validation and the job's remediation items.
+- `migration.jobs.control({ jobId, action: "resume" | "retry" })` requires the latest pre-flight status to be `Passed`. Pause and cancel remain available for operational control.
+
+A validation has `Passed`, `Needs review`, or `Blocked` status. The score is calculated from passed checks, while blocked checks prevent resume/retry. Validation checks include an operator-readable detail, a recommendation, severity, category, and whether the issue is safe to retry.
+
+The API intentionally treats missing Graph credentials as `Blocked` rather than silently falling back to a demo-ready state. In environments without live tenant credentials, operators can still review the exact missing prerequisite and its remediation recommendation.
+
+## Remediation API and lifecycle
+
+- `migration.remediation.list({ jobId?, workload?, status? })` returns owner-scoped queue items and supports workload/status filtering.
+- `migration.remediation.retry({ itemId })` is available only for retry-safe items. It records an attempt, marks the item `In progress`, sets the next retry timestamp, and emits an audit event.
+- `migration.remediation.resolve({ itemId, status: "Resolved" | "Waived" })` closes the item with an explicit operator decision and emits an audit event.
+
+Remediation items are deduplicated by active check code for a job. Each item contains workload, severity, entity, recommendation, retryability, attempts, and the latest diagnostic detail. Retry is a recommendation queue action; a workload worker should consume the `remediation.retry_queued` event and perform the provider-specific replay in a later execution increment.
 
 ## OneDrive
 

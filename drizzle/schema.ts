@@ -176,6 +176,37 @@ export const migrationJobEvents = mysqlTable("migration_job_events", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const migrationJobValidations = mysqlTable("migration_job_validations", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  jobId: varchar("jobId", { length: 32 }).notNull(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  workload: varchar("workload", { length: 32 }).notNull(),
+  status: mysqlEnum("status", ["Running", "Passed", "Needs review", "Blocked"]).default("Running").notNull(),
+  score: int("score").default(0).notNull(),
+  checks: text("checks").notNull(),
+  startedAt: timestamp("startedAt").defaultNow().notNull(),
+  completedAt: timestamp("completedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const migrationRemediationItems = mysqlTable("migration_remediation_items", {
+  id: int("id").autoincrement().primaryKey(),
+  jobId: varchar("jobId", { length: 32 }).notNull(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  workload: varchar("workload", { length: 32 }).notNull(),
+  code: varchar("code", { length: 96 }).notNull(),
+  entity: varchar("entity", { length: 255 }).notNull(),
+  severity: mysqlEnum("severity", ["Critical", "High", "Medium", "Low"]).notNull(),
+  status: mysqlEnum("status", ["Open", "In progress", "Resolved", "Waived"]).default("Open").notNull(),
+  retryable: tinyint("retryable").default(0).notNull(),
+  recommendation: text("recommendation").notNull(),
+  attempts: int("attempts").default(0).notNull(),
+  lastError: text("lastError"),
+  nextRetryAt: timestamp("nextRetryAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type LocalAccount = typeof localAccounts.$inferSelect;
@@ -194,3 +225,5 @@ export type InsertMigrationRunbookStep = typeof migrationRunbookSteps.$inferInse
 export type MigrationJob = typeof migrationJobs.$inferSelect;
 export type InsertMigrationJob = typeof migrationJobs.$inferInsert;
 export type MigrationJobEvent = typeof migrationJobEvents.$inferSelect;
+export type MigrationJobValidation = typeof migrationJobValidations.$inferSelect;
+export type MigrationRemediationItem = typeof migrationRemediationItems.$inferSelect;
