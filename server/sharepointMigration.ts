@@ -22,6 +22,20 @@ export type SharePointMigrationConfig = {
 
 export type MigrationProgressEvent = Record<string, string | number | boolean | null> & { Event?: string };
 
+export type StagingCheckpoint = {
+  packageId: string;
+  completedItemIds: string[];
+  stagedFiles: number;
+  totalFiles: number;
+  updatedAt?: string;
+};
+
+export type StagingProgress = StagingCheckpoint & {
+  active: number;
+  lastItemId?: string;
+  lastPath?: string;
+};
+
 type GraphDriveItem = {
   id: string;
   name: string;
@@ -56,8 +70,7 @@ function escapeXml(value: string) {
   return value.replace(/[<>&'\"]/g, char => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", "\"": "&quot;" })[char]!);
 }
 
-export function createMigrationManifests(items: OneDriveMigrationItem[]) {
-  const packageId = randomUUID();
+export function createMigrationManifests(items: OneDriveMigrationItem[], packageId: string = randomUUID()) {
   const files = items.filter(item => !item.isFolder);
   const folders = items.filter(item => item.isFolder);
   const manifestItems = [
@@ -85,6 +98,31 @@ async function downloadSourceItem(item: OneDriveMigrationItem) {
   return response.arrayBuffer();
 }
 
+async function withRetry<T>(operation: () => Promise<T>, attempts = 3, baseDelayMs = 500) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts - 1) break;
+      await new Promise(resolve => setTimeout(resolve, baseDelayMs * 2 ** attempt));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("Staging operation failed");
+}
+
+async function mapWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(Math.max(1, concurrency), Math.max(1, items.length)) }, async () => {
+    while (cursor < items.length) {
+      const item = items[cursor++];
+      if (item !== undefined) await worker(item);
+    }
+  });
+  await Promise.all(workers);
+}
+
 export async function enumerateOneDriveItems(driveId: string, rootItemId = "root") {
   const token = await getGraphAccessToken("source");
   if (!token) throw new Error("Source Microsoft Graph is not configured");
@@ -110,17 +148,47 @@ export async function enumerateOneDriveItems(driveId: string, rootItemId = "root
 }
 
 export async function stageOneDrivePackage(items: OneDriveMigrationItem[], config = requiredConfig()) {
-  const manifests = createMigrationManifests(items);
-  let stagedFiles = 0;
-  for (const item of items.filter(candidate => !candidate.isFolder)) {
-    const bytes = await downloadSourceItem(item);
-    await putBlob(withBlobPath(config.sourceContainerSasUri, item.relativePath), bytes, "application/octet-stream");
-    stagedFiles += 1;
+  return stageOneDrivePackageResumable(items, { config });
+}
+
+export async function stageOneDrivePackageResumable(items: OneDriveMigrationItem[], options: {
+  config?: SharePointMigrationConfig;
+  checkpoint?: Partial<StagingCheckpoint>;
+  concurrency?: number;
+  retryAttempts?: number;
+  onProgress?: (progress: StagingProgress) => Promise<void> | void;
+} = {}) {
+  const config = options.config ?? requiredConfig();
+  const files = items.filter(candidate => !candidate.isFolder);
+  const packageId = options.checkpoint?.packageId ?? randomUUID();
+  const completed = new Set(options.checkpoint?.completedItemIds ?? []);
+  const pending = files.filter(item => !completed.has(item.itemId));
+  let stagedFiles = options.checkpoint?.stagedFiles ?? files.filter(item => completed.has(item.itemId)).length;
+  const failed: Array<{ itemId: string; relativePath: string; detail: string }> = [];
+  const emitProgress = async (item?: OneDriveMigrationItem) => options.onProgress?.({ packageId, completedItemIds: Array.from(completed), stagedFiles, totalFiles: files.length, active: 0, lastItemId: item?.itemId, lastPath: item?.relativePath, updatedAt: new Date().toISOString() });
+  await emitProgress();
+  await mapWithConcurrency(pending, options.concurrency ?? 4, async (item) => {
+    try {
+      await withRetry(async () => {
+        const bytes = await downloadSourceItem(item);
+        await putBlob(withBlobPath(config.sourceContainerSasUri, item.relativePath), bytes, "application/octet-stream");
+      }, options.retryAttempts ?? 3);
+      completed.add(item.itemId);
+      stagedFiles += 1;
+      await emitProgress(item);
+    } catch (error) {
+      failed.push({ itemId: item.itemId, relativePath: item.relativePath, detail: error instanceof Error ? error.message : "Unknown staging error" });
+    }
+  });
+  if (failed.length) {
+    const detail = failed.map(item => `${item.relativePath}: ${item.detail}`).join("; ");
+    throw new Error(`Staging incomplete (${failed.length} file(s) failed). Resume from checkpoint. ${detail}`);
   }
+  const manifests = createMigrationManifests(items, packageId);
   for (const [name, xml] of Object.entries(manifests.files)) {
-    await putBlob(withBlobPath(config.manifestContainerSasUri, `${manifests.packageId}/${name}`), xml, "application/xml; charset=utf-8");
+    await withRetry(() => putBlob(withBlobPath(config.manifestContainerSasUri, `${packageId}/${name}`), xml, "application/xml; charset=utf-8"), options.retryAttempts ?? 3);
   }
-  return { packageId: manifests.packageId, stagedFiles, totalItems: items.length, manifestFiles: Object.keys(manifests.files) };
+  return { packageId, stagedFiles, totalItems: items.length, manifestFiles: Object.keys(manifests.files), checkpoint: { packageId, completedItemIds: Array.from(completed), stagedFiles, totalFiles: files.length, updatedAt: new Date().toISOString() } satisfies StagingCheckpoint };
 }
 
 async function sharePointRequest(config: SharePointMigrationConfig, path: string, init: RequestInit) {

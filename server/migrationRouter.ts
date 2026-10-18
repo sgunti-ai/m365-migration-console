@@ -4,7 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "./_core/trpc";
 import { checkGraphHealth, checkGraphHealthForConnection, discoverGraphUsers } from "./graph";
 import { appendMigrationEvent, createMigrationJob, getMigrationJob, listMigrationEvents, listMigrationJobs, updateMigrationJob } from "./migrationRepo";
-import { enumerateOneDriveItems, getSharePointMigrationProgress, stageOneDrivePackage, submitSharePointMigration } from "./sharepointMigration";
+import { enumerateOneDriveItems, getSharePointMigrationProgress, stageOneDrivePackageResumable, submitSharePointMigration } from "./sharepointMigration";
 import { enqueueSharePointPolling } from "./migrationWorker";
 import { buildPreflightChecks, summarizePreflight } from "./migrationPreflight";
 import { createRemediationItems, createValidation, getLatestValidation, getRemediationItem, listRemediationItems, updateRemediationItem } from "./migrationPreflightRepo";
@@ -113,7 +113,16 @@ export const migrationRouter = router({
       try {
         const items = await enumerateOneDriveItems(input.driveId, input.rootItemId);
         await updateMigrationJob(job.id, { status: "Running", itemsTotal: items.length, progress: 1, eta: "Package staging" });
-        const staged = await stageOneDrivePackage(items);
+        const priorCheckpoint = job.checkpoint ? JSON.parse(job.checkpoint) as { staging?: { packageId?: string; completedItemIds?: string[]; stagedFiles?: number; totalFiles?: number } } : {};
+        const staged = await stageOneDrivePackageResumable(items, {
+          checkpoint: priorCheckpoint.staging,
+          onProgress: async (progress) => {
+            const percent = progress.totalFiles > 0 ? Math.min(90, Math.max(1, 5 + Math.round((progress.stagedFiles / progress.totalFiles) * 80))) : 5;
+            const checkpoint = { provider: "SharePoint Migration API", driveId: input.driveId, rootItemId: input.rootItemId, staging: progress };
+            await updateMigrationJob(job.id, { progress: percent, itemsDone: progress.stagedFiles, itemsTotal: items.length, checkpoint: JSON.stringify(checkpoint), eta: `Staging ${progress.stagedFiles}/${progress.totalFiles} files` });
+            await appendMigrationEvent(job.id, "sharepoint.staging.progress", progress);
+          },
+        });
         const submitted = await submitSharePointMigration();
         const checkpoint = { provider: "SharePoint Migration API", packageId: staged.packageId, sharePointJobId: submitted.jobId, nextToken: "0", driveId: input.driveId, rootItemId: input.rootItemId, stagedFiles: staged.stagedFiles, totalItems: staged.totalItems };
         const updated = await updateMigrationJob(job.id, { status: "Running", progress: 2, itemsTotal: staged.totalItems, checkpoint: JSON.stringify(checkpoint), eta: "Queued by SharePoint" });
