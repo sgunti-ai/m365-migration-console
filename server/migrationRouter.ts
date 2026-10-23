@@ -4,8 +4,8 @@ import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "./_core/trpc";
 import { checkGraphHealth, checkGraphHealthForConnection, discoverGraphUsers } from "./graph";
 import { appendMigrationEvent, createMigrationJob, getMigrationJob, listMigrationEvents, listMigrationJobs, updateMigrationJob } from "./migrationRepo";
-import { enumerateOneDriveItems, getSharePointMigrationProgress, stageOneDrivePackageResumable, submitSharePointMigration } from "./sharepointMigration";
-import { enqueueSharePointPolling } from "./migrationWorker";
+import { getSharePointMigrationProgress } from "./sharepointMigration";
+import { enqueueSharePointPolling, enqueueSharePointStaging } from "./migrationWorker";
 import { buildPreflightChecks, summarizePreflight } from "./migrationPreflight";
 import { createRemediationItems, createValidation, getLatestValidation, getRemediationItem, listRemediationItems, updateRemediationItem } from "./migrationPreflightRepo";
 import { listTenantConnections } from "./localAuth";
@@ -110,32 +110,14 @@ export const migrationRouter = router({
   sharePoint: router({
     stageAndSubmit: protectedProcedure.input(z.object({ jobId: z.string().min(1), driveId: z.string().min(1), rootItemId: z.string().min(1).default("root") })).mutation(async ({ ctx, input }) => {
       const job = assertOwner(await getMigrationJob(input.jobId), ctx.user.openId);
-      try {
-        const items = await enumerateOneDriveItems(input.driveId, input.rootItemId);
-        await updateMigrationJob(job.id, { status: "Running", itemsTotal: items.length, progress: 1, eta: "Package staging" });
-        const priorCheckpoint = job.checkpoint ? JSON.parse(job.checkpoint) as { staging?: { packageId?: string; completedItemIds?: string[]; stagedFiles?: number; totalFiles?: number } } : {};
-        const staged = await stageOneDrivePackageResumable(items, {
-          checkpoint: priorCheckpoint.staging,
-          onProgress: async (progress) => {
-            const percent = progress.totalFiles > 0 ? Math.min(90, Math.max(1, 5 + Math.round((progress.stagedFiles / progress.totalFiles) * 80))) : 5;
-            const checkpoint = { provider: "SharePoint Migration API", driveId: input.driveId, rootItemId: input.rootItemId, staging: progress };
-            await updateMigrationJob(job.id, { progress: percent, itemsDone: progress.stagedFiles, itemsTotal: items.length, checkpoint: JSON.stringify(checkpoint), eta: `Staging ${progress.stagedFiles}/${progress.totalFiles} files` });
-            await appendMigrationEvent(job.id, "sharepoint.staging.progress", progress);
-          },
-        });
-        const submitted = await submitSharePointMigration();
-        const checkpoint = { provider: "SharePoint Migration API", packageId: staged.packageId, sharePointJobId: submitted.jobId, nextToken: "0", driveId: input.driveId, rootItemId: input.rootItemId, stagedFiles: staged.stagedFiles, totalItems: staged.totalItems };
-        const updated = await updateMigrationJob(job.id, { status: "Running", progress: 2, itemsTotal: staged.totalItems, checkpoint: JSON.stringify(checkpoint), eta: "Queued by SharePoint" });
-        await appendMigrationEvent(job.id, "sharepoint.submitted", checkpoint);
-        const queued = await enqueueSharePointPolling(job.id, 5000);
-        if (!queued) await appendMigrationEvent(job.id, "sharepoint.polling_waiting", { detail: "REDIS_URL is not configured; automatic progress polling is disabled." });
-        return updated;
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : "SharePoint Migration API submission failed";
-        await updateMigrationJob(job.id, { status: "Failed", lastError: detail, eta: "Failed" });
-        await appendMigrationEvent(job.id, "sharepoint.failed", { detail });
-        throw new TRPCError({ code: "BAD_GATEWAY", message: detail });
+      const queued = await enqueueSharePointStaging({ migrationJobId: job.id, driveId: input.driveId, rootItemId: input.rootItemId });
+      if (!queued) {
+        await appendMigrationEvent(job.id, "sharepoint.staging_waiting", { detail: "REDIS_URL is not configured; background staging is disabled." });
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Redis is required for background SharePoint staging. Configure REDIS_URL and retry." });
       }
+      const updated = await updateMigrationJob(job.id, { status: "Queued", progress: Math.max(job.progress, 1), eta: "Queued for background staging", lastError: null });
+      await appendMigrationEvent(job.id, "sharepoint.staging.queued", { driveId: input.driveId, rootItemId: input.rootItemId });
+      return updated;
     }),
     poll: protectedProcedure.input(z.object({ jobId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
       const job = assertOwner(await getMigrationJob(input.jobId), ctx.user.openId);

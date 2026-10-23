@@ -32,19 +32,19 @@ The source and manifest containers must be separate. The Migration API needs rea
 ## Runtime flow
 
 1. The authenticated operator creates a OneDrive job and provides a source drive ID and root item ID.
-2. The server enumerates folders and files recursively through Graph.
-3. The server stages binary content and generates `Manifest.xml`, `ExportSettings.xml`, `SystemData.xml`, and `UserGroupMap.xml`.
-4. The server submits the package to `/_api/site/CreateMigrationJob`.
-5. The returned SharePoint job ID and progress token are saved in the persisted migration checkpoint.
-6. The BullMQ worker invokes `GetMigrationJobProgress`, advances `NextToken`, updates job progress, emits a WebSocket event, and requeues the next poll until `JobEnd` or `JobError`.
+2. The API validates Redis availability, persists the job as queued, and enqueues a staging job; no recursive enumeration or blob transfer runs inside the HTTP request.
+3. A dedicated BullMQ staging worker enumerates folders and files recursively through Graph, stages binary content with bounded concurrency, and persists a resumable checkpoint after each successful file.
+4. The staging worker generates `Manifest.xml`, `ExportSettings.xml`, `SystemData.xml`, and `UserGroupMap.xml`, then submits the package to `/_api/site/CreateMigrationJob`.
+5. The returned SharePoint job ID and progress token replace the staging checkpoint in the persisted migration record.
+6. The BullMQ polling worker invokes `GetMigrationJobProgress`, advances `NextToken`, updates job progress, emits a WebSocket event, and requeues the next poll until `JobEnd` or `JobError`.
 
 ## BullMQ worker
 
-The worker uses the `m365-sharepoint-migration` queue with concurrency 2, a limiter of 20 jobs per second, six exponential-backoff attempts per poll, and a five-second delay between successful polls. It starts with the Express process and is intentionally disabled when `REDIS_URL` is missing. In that state, package submission still works and the job checkpoint is persisted, but progress must be polled manually or after Redis is configured.
+The workers use `m365-sharepoint-migration` for provider polling and `m365-sharepoint-staging` for package preparation. Polling runs with concurrency 2, a limiter of 20 jobs per second, six exponential-backoff attempts per poll, and a five-second delay between successful polls. Staging runs with one package worker, three exponential-backoff attempts, and bounded file concurrency inside the resumable staging function. Both workers start with the Express process and are disabled when `REDIS_URL` is missing. In that state, the API rejects stage-and-submit requests with a clear prerequisite error rather than starting a long-running HTTP operation.
 
-## Current limitation
+## Operational note
 
-The adapter and worker are implemented and protected behind tRPC. Bulk packaging is currently sequential and should be moved to a bounded-concurrency staging pipeline for large tenants. The Redis/BullMQ worker is required for automatic progress polling in production.
+The adapter and workers are implemented and protected behind tRPC. Configure Redis before starting a pilot; otherwise background staging and automatic progress polling remain unavailable. Staging checkpoints are retained in the migration job record, so a retried BullMQ attempt skips files already uploaded under the same package ID.
 
 ## References
 
