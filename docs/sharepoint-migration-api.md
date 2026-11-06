@@ -42,6 +42,10 @@ The source and manifest containers must be separate. The Migration API needs rea
 
 The workers use `m365-sharepoint-migration` for provider polling and `m365-sharepoint-staging` for package preparation. Polling runs with concurrency 2, a limiter of 20 jobs per second, six exponential-backoff attempts per poll, and a five-second delay between successful polls. Staging runs with one package worker, three exponential-backoff attempts, and bounded file concurrency inside the resumable staging function. Both workers start with the Express process and are disabled when `REDIS_URL` is missing. In that state, the API rejects stage-and-submit requests with a clear prerequisite error rather than starting a long-running HTTP operation.
 
+## Worker telemetry
+
+The protected `migration.worker.telemetry` procedure samples both queues and is displayed at the top of Migration Jobs. It reports waiting, active, delayed, completed, and failed counts; staged bytes and rolling MB/hour throughput; retry count and retry rate; and throttling events detected from 429, 503, or rate-limit errors. Queue counts are Redis-backed. Counters are process-local and reset when the worker restarts, so durable reporting should be added through centralized metrics before production SLO reporting.
+
 ## Operational note
 
 The adapter and workers are implemented and protected behind tRPC. Configure Redis before starting a pilot; otherwise background staging and automatic progress polling remain unavailable. Staging checkpoints are retained in the migration job record, so a retried BullMQ attempt skips files already uploaded under the same package ID.

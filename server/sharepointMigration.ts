@@ -26,6 +26,7 @@ export type StagingCheckpoint = {
   packageId: string;
   completedItemIds: string[];
   stagedFiles: number;
+  stagedBytes: number;
   totalFiles: number;
   updatedAt?: string;
 };
@@ -164,14 +165,16 @@ export async function stageOneDrivePackageResumable(items: OneDriveMigrationItem
   const completed = new Set(options.checkpoint?.completedItemIds ?? []);
   const pending = files.filter(item => !completed.has(item.itemId));
   let stagedFiles = options.checkpoint?.stagedFiles ?? files.filter(item => completed.has(item.itemId)).length;
+  let stagedBytes = options.checkpoint?.stagedBytes ?? files.filter(item => completed.has(item.itemId)).reduce((sum, item) => sum + (item.size ?? 0), 0);
   const failed: Array<{ itemId: string; relativePath: string; detail: string }> = [];
-  const emitProgress = async (item?: OneDriveMigrationItem) => options.onProgress?.({ packageId, completedItemIds: Array.from(completed), stagedFiles, totalFiles: files.length, active: 0, lastItemId: item?.itemId, lastPath: item?.relativePath, updatedAt: new Date().toISOString() });
+  const emitProgress = async (item?: OneDriveMigrationItem) => options.onProgress?.({ packageId, completedItemIds: Array.from(completed), stagedFiles, stagedBytes, totalFiles: files.length, active: 0, lastItemId: item?.itemId, lastPath: item?.relativePath, updatedAt: new Date().toISOString() });
   await emitProgress();
   await mapWithConcurrency(pending, options.concurrency ?? 4, async (item) => {
     try {
       await withRetry(async () => {
         const bytes = await downloadSourceItem(item);
         await putBlob(withBlobPath(config.sourceContainerSasUri, item.relativePath), bytes, "application/octet-stream");
+        stagedBytes += bytes.byteLength;
       }, options.retryAttempts ?? 3);
       completed.add(item.itemId);
       stagedFiles += 1;
@@ -188,7 +191,7 @@ export async function stageOneDrivePackageResumable(items: OneDriveMigrationItem
   for (const [name, xml] of Object.entries(manifests.files)) {
     await withRetry(() => putBlob(withBlobPath(config.manifestContainerSasUri, `${packageId}/${name}`), xml, "application/xml; charset=utf-8"), options.retryAttempts ?? 3);
   }
-  return { packageId, stagedFiles, totalItems: items.length, manifestFiles: Object.keys(manifests.files), checkpoint: { packageId, completedItemIds: Array.from(completed), stagedFiles, totalFiles: files.length, updatedAt: new Date().toISOString() } satisfies StagingCheckpoint };
+  return { packageId, stagedFiles, totalItems: items.length, manifestFiles: Object.keys(manifests.files), checkpoint: { packageId, completedItemIds: Array.from(completed), stagedFiles, stagedBytes, totalFiles: files.length, updatedAt: new Date().toISOString() } satisfies StagingCheckpoint };
 }
 
 async function sharePointRequest(config: SharePointMigrationConfig, path: string, init: RequestInit) {

@@ -5,6 +5,14 @@ import { enumerateOneDriveItems, getSharePointMigrationProgress, stageOneDrivePa
 
 export type SharePointPollJob = { migrationJobId: string };
 export type SharePointStageJob = { migrationJobId: string; driveId: string; rootItemId: string };
+type QueueCounts = { waiting: number; active: number; delayed: number; completed: number; failed: number };
+export type WorkerTelemetry = {
+  enabled: boolean;
+  sampledAt: string;
+  uptimeSeconds: number;
+  queues: { staging: QueueCounts; polling: QueueCounts };
+  counters: { jobsStarted: number; jobsCompleted: number; jobsFailed: number; retries: number; throttles: number; stagedFiles: number; stagedBytes: number; throughputMbHr: number; retryRate: number };
+};
 
 const queueName = "m365-sharepoint-migration";
 const stagingQueueName = "m365-sharepoint-staging";
@@ -12,6 +20,22 @@ let pollQueue: Queue<SharePointPollJob> | null = null;
 let stagingQueue: Queue<SharePointStageJob> | null = null;
 let pollWorker: Worker<SharePointPollJob> | null = null;
 let stagingWorker: Worker<SharePointStageJob> | null = null;
+const telemetryStartedAt = Date.now();
+const counters = { jobsStarted: 0, jobsCompleted: 0, jobsFailed: 0, retries: 0, throttles: 0, stagedFiles: 0, stagedBytes: 0 };
+
+const emptyCounts = (): QueueCounts => ({ waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0 });
+const normalizeCounts = (counts: Record<string, number>): QueueCounts => ({ waiting: counts.waiting ?? 0, active: counts.active ?? 0, delayed: counts.delayed ?? 0, completed: counts.completed ?? 0, failed: counts.failed ?? 0 });
+const isThrottle = (detail: string) => /\b(429|503|throttl|rate limit|too many requests)\b/i.test(detail);
+
+export async function getWorkerTelemetry(): Promise<WorkerTelemetry> {
+  const [staging, polling] = await Promise.all([
+    stagingQueue?.getJobCounts("waiting", "active", "delayed", "completed", "failed") ?? emptyCounts(),
+    pollQueue?.getJobCounts("waiting", "active", "delayed", "completed", "failed") ?? emptyCounts(),
+  ]);
+  const uptimeSeconds = Math.max(1, Math.round((Date.now() - telemetryStartedAt) / 1000));
+  const attempts = counters.jobsCompleted + counters.jobsFailed + counters.retries;
+  return { enabled: Boolean(stagingQueue && pollQueue), sampledAt: new Date().toISOString(), uptimeSeconds, queues: { staging: normalizeCounts(staging), polling: normalizeCounts(polling) }, counters: { ...counters, throughputMbHr: Math.round(counters.stagedBytes / 1024 / 1024 * 3600 / uptimeSeconds), retryRate: attempts ? Math.round(counters.retries / attempts * 100) : 0 } };
+}
 
 function redisConnection() {
   if (!ENV.redisUrl) return null;
@@ -55,6 +79,7 @@ export async function enqueueSharePointPolling(migrationJobId: string, delay = 0
 }
 
 async function stageSharePointJob(job: Job<SharePointStageJob>) {
+  counters.jobsStarted += 1;
   const record = await getMigrationJob(job.data.migrationJobId);
   if (!record || ["Completed", "Cancelled"].includes(record.status)) return { status: record?.status ?? "missing" };
   try {
@@ -67,6 +92,8 @@ async function stageSharePointJob(job: Job<SharePointStageJob>) {
         const percent = progress.totalFiles > 0 ? Math.min(90, Math.max(1, 5 + Math.round((progress.stagedFiles / progress.totalFiles) * 80))) : 5;
         const checkpoint = { provider: "SharePoint Migration API", driveId: job.data.driveId, rootItemId: job.data.rootItemId, staging: progress };
         await updateMigrationJob(record.id, { status: "Running", progress: percent, itemsDone: progress.stagedFiles, itemsTotal: items.length, checkpoint: JSON.stringify(checkpoint), eta: `Staging ${progress.stagedFiles}/${progress.totalFiles} files` });
+        counters.stagedFiles = Math.max(counters.stagedFiles, progress.stagedFiles);
+        counters.stagedBytes = Math.max(counters.stagedBytes, progress.stagedBytes ?? 0);
         await appendMigrationEvent(record.id, "sharepoint.staging.progress", { ...progress, workerJobId: job.id });
       },
     });
@@ -76,11 +103,15 @@ async function stageSharePointJob(job: Job<SharePointStageJob>) {
     await appendMigrationEvent(record.id, "sharepoint.submitted", { ...checkpoint, workerJobId: job.id });
     const queued = await enqueueSharePointPolling(record.id, 5000);
     if (!queued) await appendMigrationEvent(record.id, "sharepoint.polling_waiting", { detail: "Polling queue is unavailable after submission; use manual poll or restart the worker." });
+    counters.jobsCompleted += 1;
     return { status: "submitted", sharePointJobId: submitted.jobId };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "SharePoint staging worker failed";
     const maxAttempts = Number(job.opts.attempts ?? 1);
     const finalAttempt = job.attemptsMade + 1 >= maxAttempts;
+    if (isThrottle(detail)) counters.throttles += 1;
+    if (finalAttempt) counters.jobsFailed += 1;
+    else counters.retries += 1;
     await updateMigrationJob(record.id, { status: finalAttempt ? "Failed" : "Running", lastError: detail, eta: finalAttempt ? "Failed" : `Retrying staging (${job.attemptsMade + 1}/${maxAttempts})` });
     await appendMigrationEvent(record.id, finalAttempt ? "sharepoint.staging.failed" : "sharepoint.staging.retry", { detail, attempt: job.attemptsMade + 1, maxAttempts, workerJobId: job.id });
     throw error;

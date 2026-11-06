@@ -5,7 +5,7 @@ import { protectedProcedure, router } from "./_core/trpc";
 import { checkGraphHealth, checkGraphHealthForConnection, discoverGraphUsers } from "./graph";
 import { appendMigrationEvent, createMigrationJob, getMigrationJob, listMigrationEvents, listMigrationJobs, updateMigrationJob } from "./migrationRepo";
 import { getSharePointMigrationProgress } from "./sharepointMigration";
-import { enqueueSharePointPolling, enqueueSharePointStaging } from "./migrationWorker";
+import { enqueueSharePointPolling, enqueueSharePointStaging, getWorkerTelemetry } from "./migrationWorker";
 import { buildPreflightChecks, summarizePreflight } from "./migrationPreflight";
 import { createRemediationItems, createValidation, getLatestValidation, getRemediationItem, listRemediationItems, updateRemediationItem } from "./migrationPreflightRepo";
 import { listTenantConnections } from "./localAuth";
@@ -19,6 +19,9 @@ function assertOwner(job: Awaited<ReturnType<typeof getMigrationJob>>, openId: s
 }
 
 export const migrationRouter = router({
+  worker: router({
+    telemetry: protectedProcedure.query(() => getWorkerTelemetry()),
+  }),
   jobs: router({
     list: protectedProcedure.query(({ ctx }) => listMigrationJobs(ctx.user.openId)),
     events: protectedProcedure.input(z.object({ jobId: z.string().min(1), limit: z.number().int().min(1).max(100).default(50) })).query(async ({ ctx, input }) => {
