@@ -46,6 +46,8 @@ The workers use `m365-sharepoint-migration` for provider polling and `m365-share
 
 The protected `migration.worker.telemetry` procedure samples both queues and is displayed at the top of Migration Jobs. It reports waiting, active, delayed, completed, and failed counts; staged bytes and rolling MB/hour throughput; retry count and retry rate; and throttling events detected from 429, 503, or rate-limit errors. Queue counts are Redis-backed. Counters are process-local and reset when the worker restarts, so durable reporting should be added through centralized metrics before production SLO reporting.
 
+The UI marks the worker healthy until three throttling events or a 10% failed-job rate is reached. It then shows an amber attention banner; ten throttling events or a 25% failed-job rate escalates the banner to critical. These are operator guardrails, not hard execution blocks: review provider retry-after guidance and failed-job remediation before increasing concurrency.
+
 ## Operational note
 
 The adapter and workers are implemented and protected behind tRPC. Configure Redis before starting a pilot; otherwise background staging and automatic progress polling remain unavailable. Staging checkpoints are retained in the migration job record, so a retried BullMQ attempt skips files already uploaded under the same package ID.

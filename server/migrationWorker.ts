@@ -11,7 +11,7 @@ export type WorkerTelemetry = {
   sampledAt: string;
   uptimeSeconds: number;
   queues: { staging: QueueCounts; polling: QueueCounts };
-  counters: { jobsStarted: number; jobsCompleted: number; jobsFailed: number; retries: number; throttles: number; stagedFiles: number; stagedBytes: number; throughputMbHr: number; retryRate: number };
+  counters: { jobsStarted: number; jobsCompleted: number; jobsFailed: number; retries: number; throttles: number; stagedFiles: number; stagedBytes: number; throughputMbHr: number; retryRate: number; failedJobRate: number };
 };
 
 const queueName = "m365-sharepoint-migration";
@@ -34,7 +34,8 @@ export async function getWorkerTelemetry(): Promise<WorkerTelemetry> {
   ]);
   const uptimeSeconds = Math.max(1, Math.round((Date.now() - telemetryStartedAt) / 1000));
   const attempts = counters.jobsCompleted + counters.jobsFailed + counters.retries;
-  return { enabled: Boolean(stagingQueue && pollQueue), sampledAt: new Date().toISOString(), uptimeSeconds, queues: { staging: normalizeCounts(staging), polling: normalizeCounts(polling) }, counters: { ...counters, throughputMbHr: Math.round(counters.stagedBytes / 1024 / 1024 * 3600 / uptimeSeconds), retryRate: attempts ? Math.round(counters.retries / attempts * 100) : 0 } };
+  const finished = counters.jobsCompleted + counters.jobsFailed;
+  return { enabled: Boolean(stagingQueue && pollQueue), sampledAt: new Date().toISOString(), uptimeSeconds, queues: { staging: normalizeCounts(staging), polling: normalizeCounts(polling) }, counters: { ...counters, throughputMbHr: Math.round(counters.stagedBytes / 1024 / 1024 * 3600 / uptimeSeconds), retryRate: attempts ? Math.round(counters.retries / attempts * 100) : 0, failedJobRate: finished ? Math.round(counters.jobsFailed / finished * 100) : 0 } };
 }
 
 function redisConnection() {
