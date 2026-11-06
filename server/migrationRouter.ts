@@ -9,6 +9,7 @@ import { enqueueSharePointPolling, enqueueSharePointStaging, getWorkerTelemetry 
 import { buildPreflightChecks, summarizePreflight } from "./migrationPreflight";
 import { createRemediationItems, createValidation, getLatestValidation, getRemediationItem, listRemediationItems, updateRemediationItem } from "./migrationPreflightRepo";
 import { listTenantConnections } from "./localAuth";
+import { isThrottlingIncident } from "./migrationIncidentRules";
 
 const workloads = z.enum(["OneDrive", "SharePoint", "Exchange", "Teams"]);
 const status = z.enum(["Queued", "Running", "Paused", "Completed", "Needs review", "Failed", "Cancelled"]);
@@ -21,6 +22,12 @@ function assertOwner(job: Awaited<ReturnType<typeof getMigrationJob>>, openId: s
 export const migrationRouter = router({
   worker: router({
     telemetry: protectedProcedure.query(() => getWorkerTelemetry()),
+    recentIncidents: protectedProcedure.query(async ({ ctx }) => {
+      const jobs = await listMigrationJobs(ctx.user.openId);
+      const failedJobs = jobs.filter(job => job.status === "Failed").slice(0, 12).map(job => ({ id: job.id, name: job.name, workload: job.workload, status: job.status, progress: job.progress, errors: job.errors, eta: job.eta, started: job.started }));
+      const eventGroups = await Promise.all(jobs.slice(0, 30).map(async job => (await listMigrationEvents(job.id, 30)).filter(event => isThrottlingIncident(event.type, event.payload)).map(event => ({ id: `${job.id}-${event.id}`, jobId: job.id, jobName: job.name, type: event.type, payload: event.payload, createdAt: event.createdAt }))));
+      return { failedJobs, throttlingEvents: eventGroups.flat().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 20) };
+    }),
   }),
   jobs: router({
     list: protectedProcedure.query(({ ctx }) => listMigrationJobs(ctx.user.openId)),
