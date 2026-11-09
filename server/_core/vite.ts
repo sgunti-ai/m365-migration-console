@@ -9,13 +9,12 @@ import viteConfig from "../../vite.config";
 export async function setupVite(app: Express, server: Server) {
   const serverOptions = {
     middlewareMode: true,
-    // WebDev exposes the Express server through an HTTPS reverse proxy. In
-    // middleware mode the HTTP server has not started listening yet, so Vite
-    // cannot infer a public HMR endpoint and otherwise advertises its default
-    // localhost:5173 websocket URL to the browser. Keep the websocket on the
-    // same public origin instead; the proxy terminates TLS and forwards it to
-    // the HMR server passed above.
-    hmr: { server, protocol: "wss", clientPort: 443 },
+    // WebDev exposes this middleware server through an HTTPS reverse proxy.
+    // The proxy does not guarantee websocket upgrades for Vite's HMR channel;
+    // allowing Vite to inject its client produces repeated "failed to connect
+    // to websocket" errors in the preview. Disable HMR for this hosted path;
+    // the preview remains live and picks up changes on refresh.
+    hmr: false,
     allowedHosts: true as const,
   };
 
