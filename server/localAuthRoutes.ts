@@ -5,6 +5,7 @@ import { checkGraphHealthForConnection, checkGraphHealthForCredentials } from ".
 import { eq } from "drizzle-orm";
 import { localAccounts } from "../drizzle/schema";
 import { getDb } from "./db";
+import type { TenantWorkload } from "./tenantPermissionRules";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 function clientIp(req: Request) { return String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim(); }
@@ -79,9 +80,9 @@ export function registerLocalAuthRoutes(app: Express) {
   app.post("/api/workspace/tenant-connections/test", async (req, res) => {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
-    const { direction, tenantId, clientId, clientSecret } = req.body ?? {};
-    if (!["source", "target"].includes(direction) || typeof tenantId !== "string" || typeof clientId !== "string" || typeof clientSecret !== "string") return setError(res, 400, "Role, tenant ID, client ID, and client secret are required.");
-    const health = await checkGraphHealthForCredentials({ tenant: direction, tenantId: tenantId.trim(), clientId: clientId.trim(), clientSecret });
+    const { direction, tenantId, clientId, clientSecret, workload } = req.body ?? {};
+    if (!["source", "target"].includes(direction) || !["oneDrive", "sharePoint", "exchange", "teams"].includes(workload) || typeof tenantId !== "string" || typeof clientId !== "string" || typeof clientSecret !== "string") return setError(res, 400, "Role, workload, tenant ID, client ID, and client secret are required.");
+    const health = await checkGraphHealthForCredentials({ tenant: direction, tenantId: tenantId.trim(), clientId: clientId.trim(), clientSecret, workload: workload as TenantWorkload });
     const statusCode = health.status === "connected" ? 200 : health.status === "not_configured" ? 400 : 502;
     return res.status(statusCode).json({ ok: health.status === "connected", health, error: health.status === "connected" ? undefined : health.detail });
   });

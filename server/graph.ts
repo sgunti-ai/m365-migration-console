@@ -1,6 +1,7 @@
 import { decryptCredential } from "./credentialVault";
 import { getTenantConnection } from "./localAuth";
 import { ENV } from "./_core/env";
+import { inspectGraphPermissions, type TenantWorkload } from "./tenantPermissionRules";
 
 export type GraphTenant = "source" | "target";
 type GraphConfig = { tenantId: string; clientId: string; clientSecret: string };
@@ -14,6 +15,10 @@ export type GraphHealth = {
   tenantId?: string;
   detail: string;
   connectionId?: string;
+  workload?: TenantWorkload;
+  requiredPermissions?: string[];
+  grantedPermissions?: string[];
+  missingPermissions?: string[];
 };
 
 function configFor(tenant: GraphTenant): GraphConfig {
@@ -93,14 +98,17 @@ export async function checkGraphHealthForConnection(ownerOpenId: string, connect
   }
 }
 
-export async function checkGraphHealthForCredentials(input: { tenant: GraphTenant; tenantId: string; clientId: string; clientSecret: string }): Promise<GraphHealth> {
+export async function checkGraphHealthForCredentials(input: { tenant: GraphTenant; tenantId: string; clientId: string; clientSecret: string; workload: TenantWorkload }): Promise<GraphHealth> {
   if (!input.tenantId || !input.clientId || !input.clientSecret) return { tenant: input.tenant, configured: false, status: "not_configured", tenantId: input.tenantId || undefined, detail: "Tenant ID, client ID, and client secret are required." };
   try {
     const token = await requestAccessToken({ tenantId: input.tenantId, clientId: input.clientId, clientSecret: input.clientSecret });
+    const permissions = inspectGraphPermissions(token, input.workload, input.tenant);
+    if (!permissions.hasInspectableRoles) throw new Error("Microsoft Graph returned a token without inspectable application roles; confirm the app registration uses application permissions.");
+    if (permissions.missingPermissions.length) return { tenant: input.tenant, configured: true, status: "error", tenantId: input.tenantId, workload: input.workload, ...permissions, detail: `Missing required ${input.workload} application permission(s): ${permissions.missingPermissions.join(", ")}. Grant admin consent and request a new token.` };
     const response = await fetch("https://graph.microsoft.com/v1.0/organization?$select=id,displayName", { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) { const detail = await response.text().catch(() => ""); throw new Error(`Graph ${response.status}: ${detail.slice(0, 240)}`); }
     const organization = await response.json() as { value?: Array<{ id?: string; displayName?: string }> };
-    return { tenant: input.tenant, configured: true, status: "connected", tenantId: input.tenantId, displayName: organization.value?.[0]?.displayName, detail: "Microsoft Graph validated the entered credentials." };
+    return { tenant: input.tenant, configured: true, status: "connected", tenantId: input.tenantId, workload: input.workload, ...permissions, displayName: organization.value?.[0]?.displayName, detail: `Microsoft Graph validated the credentials and required ${input.workload} permissions.` };
   } catch (error) {
     return { tenant: input.tenant, configured: true, status: "error", tenantId: input.tenantId, detail: error instanceof Error ? error.message : "Microsoft Graph validation failed." };
   }

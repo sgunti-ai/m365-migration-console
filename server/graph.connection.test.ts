@@ -38,14 +38,27 @@ describe("dynamic Graph connection", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes("login.microsoftonline.com")) {
         expect(String(init?.body)).toContain("client_secret=one-time-secret");
-        return new Response(JSON.stringify({ access_token: "graph-access-token" }), { status: 200 });
+        const payload = Buffer.from(JSON.stringify({ roles: ["Files.Read.All"] })).toString("base64url");
+        return new Response(JSON.stringify({ access_token: `header.${payload}.signature` }), { status: 200 });
       }
       return new Response(JSON.stringify({ value: [{ displayName: "Pilot tenant" }] }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    const health = await checkGraphHealthForCredentials({ tenant: "source", tenantId: "tenant-guid", clientId: "client-guid", clientSecret: "one-time-secret" });
+    const health = await checkGraphHealthForCredentials({ tenant: "source", tenantId: "tenant-guid", clientId: "client-guid", clientSecret: "one-time-secret", workload: "oneDrive" });
     expect(health.status).toBe("connected");
     expect(health.displayName).toBe("Pilot tenant");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports missing workload permissions without calling Graph organization", async () => {
+    const payload = Buffer.from(JSON.stringify({ roles: ["Files.Read.All"] })).toString("base64url");
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).includes("login.microsoftonline.com")
+      ? new Response(JSON.stringify({ access_token: `header.${payload}.signature` }), { status: 200 })
+      : new Response(JSON.stringify({ value: [{ displayName: "Unexpected call" }] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const health = await checkGraphHealthForCredentials({ tenant: "target", tenantId: "tenant-guid", clientId: "client-guid", clientSecret: "one-time-secret", workload: "oneDrive" });
+    expect(health.status).toBe("error");
+    expect(health.missingPermissions).toContain("Files.ReadWrite.All");
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
