@@ -93,6 +93,19 @@ export async function checkGraphHealthForConnection(ownerOpenId: string, connect
   }
 }
 
+export async function checkGraphHealthForCredentials(input: { tenant: GraphTenant; tenantId: string; clientId: string; clientSecret: string }): Promise<GraphHealth> {
+  if (!input.tenantId || !input.clientId || !input.clientSecret) return { tenant: input.tenant, configured: false, status: "not_configured", tenantId: input.tenantId || undefined, detail: "Tenant ID, client ID, and client secret are required." };
+  try {
+    const token = await requestAccessToken({ tenantId: input.tenantId, clientId: input.clientId, clientSecret: input.clientSecret });
+    const response = await fetch("https://graph.microsoft.com/v1.0/organization?$select=id,displayName", { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) { const detail = await response.text().catch(() => ""); throw new Error(`Graph ${response.status}: ${detail.slice(0, 240)}`); }
+    const organization = await response.json() as { value?: Array<{ id?: string; displayName?: string }> };
+    return { tenant: input.tenant, configured: true, status: "connected", tenantId: input.tenantId, displayName: organization.value?.[0]?.displayName, detail: "Microsoft Graph validated the entered credentials." };
+  } catch (error) {
+    return { tenant: input.tenant, configured: true, status: "error", tenantId: input.tenantId, detail: error instanceof Error ? error.message : "Microsoft Graph validation failed." };
+  }
+}
+
 export async function discoverGraphUsers(tenant: GraphTenant, limit = 100) {
   const query = `/users?$select=id,displayName,userPrincipalName,mail,accountEnabled&$top=${Math.min(limit, 999)}`;
   return graphGet<{ value: Array<{ id: string; displayName?: string; userPrincipalName?: string; mail?: string; accountEnabled?: boolean }> }>(tenant, query);

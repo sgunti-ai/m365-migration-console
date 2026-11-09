@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { checkGraphHealthForConnection, getAppAccessTokenForConnection } from "./graph";
+import { checkGraphHealthForConnection, checkGraphHealthForCredentials, getAppAccessTokenForConnection } from "./graph";
 import { encryptCredential } from "./credentialVault";
 
 describe("dynamic Graph connection", () => {
@@ -32,5 +32,20 @@ describe("dynamic Graph connection", () => {
     const health = await checkGraphHealthForConnection("local:graph-test-user", "TEN-does-not-exist");
     expect(health.status).toBe("error");
     expect(health.detail).toContain("not found");
+  });
+
+  it("tests entered credentials without requiring a stored connection", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("login.microsoftonline.com")) {
+        expect(String(init?.body)).toContain("client_secret=one-time-secret");
+        return new Response(JSON.stringify({ access_token: "graph-access-token" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ value: [{ displayName: "Pilot tenant" }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const health = await checkGraphHealthForCredentials({ tenant: "source", tenantId: "tenant-guid", clientId: "client-guid", clientSecret: "one-time-secret" });
+    expect(health.status).toBe("connected");
+    expect(health.displayName).toBe("Pilot tenant");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

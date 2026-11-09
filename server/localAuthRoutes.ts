@@ -1,7 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createHash } from "node:crypto";
 import { createTenantConnection, ensureBootstrapAdmin, getLocalUserFromToken, hashPassword, listTenantConnections, loginLocal, revokeLocalSession, updateTenantConnectionStatus, validatePasswordPolicy, verifyPassword, LOCAL_SESSION_COOKIE } from "./localAuth";
-import { checkGraphHealthForConnection } from "./graph";
+import { checkGraphHealthForConnection, checkGraphHealthForCredentials } from "./graph";
 import { eq } from "drizzle-orm";
 import { localAccounts } from "../drizzle/schema";
 import { getDb } from "./db";
@@ -74,6 +74,16 @@ export function registerLocalAuthRoutes(app: Express) {
     if (clientSecret !== undefined && typeof clientSecret !== "string") return setError(res, 400, "Client secret must be a string.");
     const connection = await createTenantConnection({ ownerOpenId: user.openId, label: label.trim(), direction, tenantId: tenantId.trim(), clientId: typeof clientId === "string" ? clientId.trim() : undefined, clientSecret: typeof clientSecret === "string" ? clientSecret : undefined, siteUrl: typeof siteUrl === "string" ? siteUrl.trim() : undefined });
     res.status(201).json({ ok: true, connection });
+  });
+
+  app.post("/api/workspace/tenant-connections/test", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const { direction, tenantId, clientId, clientSecret } = req.body ?? {};
+    if (!["source", "target"].includes(direction) || typeof tenantId !== "string" || typeof clientId !== "string" || typeof clientSecret !== "string") return setError(res, 400, "Role, tenant ID, client ID, and client secret are required.");
+    const health = await checkGraphHealthForCredentials({ tenant: direction, tenantId: tenantId.trim(), clientId: clientId.trim(), clientSecret });
+    const statusCode = health.status === "connected" ? 200 : health.status === "not_configured" ? 400 : 502;
+    return res.status(statusCode).json({ ok: health.status === "connected", health, error: health.status === "connected" ? undefined : health.detail });
   });
 
   app.post("/api/workspace/tenant-connections/:id/validate", async (req, res) => {
