@@ -85,14 +85,21 @@ export async function checkGraphHealth(tenant: GraphTenant): Promise<GraphHealth
   }
 }
 
-export async function checkGraphHealthForConnection(ownerOpenId: string, connectionId: string): Promise<GraphHealth> {
+export async function checkGraphHealthForConnection(ownerOpenId: string, connectionId: string, workload: TenantWorkload = "oneDrive"): Promise<GraphHealth> {
   const connection = await getTenantConnection(ownerOpenId, connectionId);
   if (!connection) return { tenant: "source", configured: false, status: "error", detail: "Tenant connection was not found.", connectionId };
   const tenant = connection.direction;
   if (!connection.tenantId || !connection.clientId || !connection.clientSecretCiphertext) return { tenant, configured: false, status: "not_configured", tenantId: connection.tenantId, detail: "Add tenant ID, client ID, and client secret to validate this connection.", connectionId };
   try {
-    const organization = await graphGetForConnection<{ value?: Array<{ id?: string; displayName?: string }> }>(connection, "/organization?$select=id,displayName");
-    return { tenant, configured: true, status: "connected", tenantId: connection.tenantId, displayName: organization.value?.[0]?.displayName, detail: "Microsoft Graph validated this configured tenant connection.", connectionId };
+    const token = await getAppAccessTokenForConnection(connection);
+    if (!token) throw new Error("Tenant connection requires tenant ID, client ID, and client secret");
+    const permissions = inspectGraphPermissions(token, workload, tenant);
+    if (!permissions.hasInspectableRoles) throw new Error("Microsoft Graph returned a token without inspectable application roles; confirm application permissions are configured.");
+    if (permissions.missingPermissions.length) return { tenant, configured: true, status: "error", tenantId: connection.tenantId, workload, ...permissions, detail: `Missing required ${workload} application permission(s): ${permissions.missingPermissions.join(", ")}. Grant admin consent and refresh again.`, connectionId };
+    const response = await fetch("https://graph.microsoft.com/v1.0/organization?$select=id,displayName", { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+    if (!response.ok) { const detail = await response.text().catch(() => ""); throw new Error(`Graph ${response.status}: ${detail.slice(0, 240)}`); }
+    const organization = await response.json() as { value?: Array<{ id?: string; displayName?: string }> };
+    return { tenant, configured: true, status: "connected", tenantId: connection.tenantId, workload, ...permissions, displayName: organization.value?.[0]?.displayName, detail: `Microsoft Graph refreshed the connection and verified ${workload} permissions.`, connectionId };
   } catch (error) {
     return { tenant, configured: true, status: "error", tenantId: connection.tenantId, detail: error instanceof Error ? error.message : "Microsoft Graph validation failed.", connectionId };
   }

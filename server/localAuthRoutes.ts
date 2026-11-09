@@ -90,7 +90,8 @@ export function registerLocalAuthRoutes(app: Express) {
   app.post("/api/workspace/tenant-connections/:id/validate", async (req, res) => {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
-    const health = await checkGraphHealthForConnection(user.openId, req.params.id);
+    const workload = ["oneDrive", "sharePoint", "exchange", "teams"].includes(req.body?.workload) ? req.body.workload as TenantWorkload : "oneDrive";
+    const health = await checkGraphHealthForConnection(user.openId, req.params.id, workload);
     await updateTenantConnectionStatus(user.openId, req.params.id, health.status === "connected" ? "Connected" : health.status === "error" ? "Error" : "Draft");
     const statusCode = health.status === "connected" ? 200 : health.status === "not_configured" ? 400 : 502;
     res.status(statusCode).json({ ok: health.status === "connected", health, error: health.status === "connected" ? undefined : health.detail });
