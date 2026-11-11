@@ -45,6 +45,11 @@ export type InventoryRun = {
   error?: string;
 };
 
+export type InventoryProgressEvent = {
+  inventory: InventoryRun;
+  workloads: DiscoveryWorkloadResult[];
+};
+
 export type DiscoveryAssessment = {
   id: string;
   connectionId: string;
@@ -62,6 +67,7 @@ export type DiscoveryAssessment = {
 
 const assessments = new Map<string, DiscoveryAssessment>();
 const inventoryRuns = new Map<string, InventoryRun>();
+const inventorySubscribers = new Map<string, Set<(event: InventoryProgressEvent) => void>>();
 const labels: Record<DiscoveryWorkload, string> = { oneDrive: "OneDrive", sharePoint: "SharePoint", exchange: "Exchange Online", teams: "Teams" };
 const graphPermissionPortal = "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/ApiPermissions";
 
@@ -199,6 +205,24 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 ** exponent).toFixed(exponent === 0 ? 0 : 1)} ${units[exponent]}`;
 }
 
+function publishInventoryProgress(ownerOpenId: string, run: InventoryRun, workloads: DiscoveryWorkloadResult[]) {
+  const subscribers = inventorySubscribers.get(`${ownerOpenId}:${run.assessmentId}`);
+  if (!subscribers) return;
+  const event: InventoryProgressEvent = { inventory: { ...run, workloadResults: [...run.workloadResults] }, workloads: [...workloads] };
+  subscribers.forEach((listener) => listener(event));
+}
+
+export function subscribeInventoryProgress(ownerOpenId: string, assessmentId: string, listener: (event: InventoryProgressEvent) => void) {
+  const key = `${ownerOpenId}:${assessmentId}`;
+  const subscribers = inventorySubscribers.get(key) ?? new Set<(event: InventoryProgressEvent) => void>();
+  subscribers.add(listener);
+  inventorySubscribers.set(key, subscribers);
+  return () => {
+    subscribers.delete(listener);
+    if (!subscribers.size) inventorySubscribers.delete(key);
+  };
+}
+
 export async function testSourceDiscoveryConnection(ownerOpenId: string, connectionId: string) {
   const connection = await getTenantConnection(ownerOpenId, connectionId);
   if (!connection) return { ok: false as const, status: "error" as const, detail: "Source tenant connection was not found." };
@@ -243,6 +267,7 @@ export async function createInventoryRun(ownerOpenId: string, assessmentId: stri
   const { persistInventoryRun, persistDiscoveryAssessment } = await import("./discoveryPersistence");
   await persistInventoryRun(ownerOpenId, run);
   if (assessment?.id === assessmentId) await persistDiscoveryAssessment(ownerOpenId, assessment);
+  if (assessment?.id === assessmentId) publishInventoryProgress(ownerOpenId, run, assessment.workloads);
   return run;
 }
 
@@ -273,6 +298,7 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
   run.status = "running";
   const { persistInventoryRun, persistDiscoveryAssessment } = await import("./discoveryPersistence");
   await persistInventoryRun(ownerOpenId, run);
+  publishInventoryProgress(ownerOpenId, run, assessment.workloads);
   const workloads = Object.keys(labels) as DiscoveryWorkload[];
   try {
     for (const workload of workloads) {
@@ -284,6 +310,7 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
       assessment.workloads = assessment.workloads.map((item) => item.workload === workload ? result : item);
       await persistInventoryRun(ownerOpenId, run);
       await persistDiscoveryAssessment(ownerOpenId, assessment);
+      publishInventoryProgress(ownerOpenId, run, assessment.workloads);
       if (result.status === "permission_required") {
         assessment.permissionErrors = Array.from(new Set([...assessment.permissionErrors, `${result.label}: ${result.permission} is required`]));
         assessment.permissionChecklist = buildPermissionChecklist(connection, token, [workload]);
@@ -294,6 +321,7 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
     assessment.inventory = run;
     await persistInventoryRun(ownerOpenId, run);
     await persistDiscoveryAssessment(ownerOpenId, assessment);
+    publishInventoryProgress(ownerOpenId, run, assessment.workloads);
     return run;
   } catch (error) {
     run.status = "failed";
@@ -301,6 +329,7 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
     assessment.inventory = run;
     await persistInventoryRun(ownerOpenId, run);
     await persistDiscoveryAssessment(ownerOpenId, assessment);
+    publishInventoryProgress(ownerOpenId, run, assessment.workloads);
     throw error;
   }
 }

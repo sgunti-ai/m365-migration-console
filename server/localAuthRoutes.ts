@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { localAccounts } from "../drizzle/schema";
 import { getDb } from "./db";
 import type { TenantWorkload } from "./tenantPermissionRules";
-import { createInventoryRun, discoveryCsv, latestDiscovery, latestInventory, runSourceDiscovery, testSourceDiscoveryConnection } from "./discovery";
+import { createInventoryRun, discoveryCsv, latestDiscovery, latestInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
 import { enqueueDiscoveryInventory } from "./migrationWorker";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
@@ -126,6 +126,23 @@ export function registerLocalAuthRoutes(app: Express) {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
     return res.json({ ok: true, assessment: await latestDiscovery(user.openId), inventory: await latestInventory(user.openId) });
+  });
+
+  app.get("/api/workspace/discovery/inventory/stream", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const assessmentId = typeof req.query.assessmentId === "string" ? req.query.assessmentId : "";
+    if (!assessmentId) return setError(res, 400, "An assessment ID is required.");
+    const assessment = await latestDiscovery(user.openId);
+    if (!assessment || assessment.id !== assessmentId) return setError(res, 404, "Discovery assessment was not found.");
+    res.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", "X-Accel-Buffering": "no" });
+    res.flushHeaders();
+    const send = (event: unknown) => res.write(`event: inventory\ndata: ${JSON.stringify(event)}\n\n`);
+    const current = await latestInventory(user.openId);
+    if (current) send({ inventory: current, workloads: assessment.workloads });
+    const unsubscribe = subscribeInventoryProgress(user.openId, assessmentId, send);
+    const heartbeat = setInterval(() => res.write(": keep-alive\n\n"), 15_000);
+    req.on("close", () => { clearInterval(heartbeat); unsubscribe(); });
   });
 
   app.post("/api/workspace/discovery/inventory", async (req, res) => {

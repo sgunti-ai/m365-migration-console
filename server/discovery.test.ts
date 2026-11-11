@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTenantConnection } from "./localAuth";
-import { createInventoryRun, discoveryCsv, runDetailedWorkloadInventory, runSourceDiscovery, testSourceDiscoveryConnection } from "./discovery";
+import { createInventoryRun, discoveryCsv, runDetailedWorkloadInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
 
 describe("source discovery", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -77,11 +77,16 @@ describe("source discovery", () => {
     }));
     const assessment = await runSourceDiscovery("local:inventory-user", connection!.id);
     await createInventoryRun("local:inventory-user", assessment.id, connection!.id);
+    const progressEvents: number[] = [];
+    const unsubscribe = subscribeInventoryProgress("local:inventory-user", assessment.id, (event) => progressEvents.push(event.inventory.progress));
     const inventory = await runDetailedWorkloadInventory("local:inventory-user", connection!.id, assessment.id);
+    unsubscribe();
     expect(inventory.status).toBe("completed");
     expect(inventory.progress).toBe(100);
     expect(inventory.totalSizeBytes).toBe(21504);
-    expect(inventory.workloadResults.find((item) => item.workload === "oneDrive")?.itemCount).toBe(2);
+    expect(inventory.workloadResults.find((item) => item.workload === "exchange")?.sizeBytes).toBe(4096);
+    expect(progressEvents).toContain(25);
+    expect(progressEvents).toContain(100);
     expect(inventory.workloadResults.find((item) => item.workload === "exchange")?.sizeBytes).toBe(4096);
   });
 });
