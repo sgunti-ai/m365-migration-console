@@ -2,40 +2,46 @@ import { Queue, Worker, type Job } from "bullmq";
 import { ENV } from "./_core/env";
 import { appendMigrationEvent, getMigrationJob, updateMigrationJob } from "./migrationRepo";
 import { enumerateOneDriveItems, getSharePointMigrationProgress, stageOneDrivePackageResumable, submitSharePointMigration } from "./sharepointMigration";
+import { runDetailedWorkloadInventory } from "./discovery";
 
 export type SharePointPollJob = { migrationJobId: string };
 export type SharePointStageJob = { migrationJobId: string; driveId: string; rootItemId: string };
+export type DiscoveryInventoryJob = { ownerOpenId: string; connectionId: string; assessmentId: string };
 type QueueCounts = { waiting: number; active: number; delayed: number; completed: number; failed: number };
 export type WorkerTelemetry = {
   enabled: boolean;
   sampledAt: string;
   uptimeSeconds: number;
-  queues: { staging: QueueCounts; polling: QueueCounts };
-  counters: { jobsStarted: number; jobsCompleted: number; jobsFailed: number; retries: number; throttles: number; stagedFiles: number; stagedBytes: number; throughputMbHr: number; retryRate: number; failedJobRate: number };
+  queues: { staging: QueueCounts; polling: QueueCounts; inventory: QueueCounts };
+  counters: { jobsStarted: number; jobsCompleted: number; jobsFailed: number; retries: number; throttles: number; stagedFiles: number; stagedBytes: number; inventoryStarted: number; inventoryCompleted: number; inventoryFailed: number; throughputMbHr: number; retryRate: number; failedJobRate: number };
 };
 
 const queueName = "m365-sharepoint-migration";
 const stagingQueueName = "m365-sharepoint-staging";
+const inventoryQueueName = "m365-discovery-inventory";
 let pollQueue: Queue<SharePointPollJob> | null = null;
 let stagingQueue: Queue<SharePointStageJob> | null = null;
+let inventoryQueue: Queue<DiscoveryInventoryJob> | null = null;
 let pollWorker: Worker<SharePointPollJob> | null = null;
 let stagingWorker: Worker<SharePointStageJob> | null = null;
+let inventoryWorker: Worker<DiscoveryInventoryJob> | null = null;
 const telemetryStartedAt = Date.now();
-const counters = { jobsStarted: 0, jobsCompleted: 0, jobsFailed: 0, retries: 0, throttles: 0, stagedFiles: 0, stagedBytes: 0 };
+const counters = { jobsStarted: 0, jobsCompleted: 0, jobsFailed: 0, retries: 0, throttles: 0, stagedFiles: 0, stagedBytes: 0, inventoryStarted: 0, inventoryCompleted: 0, inventoryFailed: 0 };
 
 const emptyCounts = (): QueueCounts => ({ waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0 });
 const normalizeCounts = (counts: Record<string, number>): QueueCounts => ({ waiting: counts.waiting ?? 0, active: counts.active ?? 0, delayed: counts.delayed ?? 0, completed: counts.completed ?? 0, failed: counts.failed ?? 0 });
 const isThrottle = (detail: string) => /\b(429|503|throttl|rate limit|too many requests)\b/i.test(detail);
 
 export async function getWorkerTelemetry(): Promise<WorkerTelemetry> {
-  const [staging, polling] = await Promise.all([
+  const [staging, polling, inventory] = await Promise.all([
     stagingQueue?.getJobCounts("waiting", "active", "delayed", "completed", "failed") ?? emptyCounts(),
     pollQueue?.getJobCounts("waiting", "active", "delayed", "completed", "failed") ?? emptyCounts(),
+    inventoryQueue?.getJobCounts("waiting", "active", "delayed", "completed", "failed") ?? emptyCounts(),
   ]);
   const uptimeSeconds = Math.max(1, Math.round((Date.now() - telemetryStartedAt) / 1000));
   const attempts = counters.jobsCompleted + counters.jobsFailed + counters.retries;
   const finished = counters.jobsCompleted + counters.jobsFailed;
-  return { enabled: Boolean(stagingQueue && pollQueue), sampledAt: new Date().toISOString(), uptimeSeconds, queues: { staging: normalizeCounts(staging), polling: normalizeCounts(polling) }, counters: { ...counters, throughputMbHr: Math.round(counters.stagedBytes / 1024 / 1024 * 3600 / uptimeSeconds), retryRate: attempts ? Math.round(counters.retries / attempts * 100) : 0, failedJobRate: finished ? Math.round(counters.jobsFailed / finished * 100) : 0 } };
+  return { enabled: Boolean(stagingQueue && pollQueue && inventoryQueue), sampledAt: new Date().toISOString(), uptimeSeconds, queues: { staging: normalizeCounts(staging), polling: normalizeCounts(polling), inventory: normalizeCounts(inventory) }, counters: { ...counters, throughputMbHr: Math.round(counters.stagedBytes / 1024 / 1024 * 3600 / uptimeSeconds), retryRate: attempts ? Math.round(counters.retries / attempts * 100) : 0, failedJobRate: finished ? Math.round(counters.jobsFailed / finished * 100) : 0 } };
 }
 
 function redisConnection() {
@@ -76,6 +82,12 @@ export async function enqueueSharePointPolling(migrationJobId: string, delay = 0
     removeOnComplete: 100,
     removeOnFail: 1000,
   });
+  return true;
+}
+
+export async function enqueueDiscoveryInventory(input: DiscoveryInventoryJob) {
+  if (!inventoryQueue) return false;
+  await inventoryQueue.add("inventory-assessment", input, { jobId: `inventory-${input.assessmentId}`, attempts: 2, backoff: { type: "exponential", delay: 10_000 }, removeOnComplete: 100, removeOnFail: 1000 });
   return true;
 }
 
@@ -146,6 +158,19 @@ async function pollSharePointJob(job: Job<SharePointPollJob>) {
   return { status: nextStatus, events: result.events.length, nextToken: result.nextToken };
 }
 
+async function inventoryDiscovery(job: Job<DiscoveryInventoryJob>) {
+  counters.inventoryStarted += 1;
+  try {
+    const result = await runDetailedWorkloadInventory(job.data.ownerOpenId, job.data.connectionId, job.data.assessmentId);
+    counters.inventoryCompleted += 1;
+    return { status: result.status, progress: result.progress, totalSizeBytes: result.totalSizeBytes };
+  } catch (error) {
+    counters.inventoryFailed += 1;
+    if (isThrottle(error instanceof Error ? error.message : "")) counters.throttles += 1;
+    throw error;
+  }
+}
+
 export function startMigrationWorker() {
   const connection = redisConnection();
   if (!connection) {
@@ -154,23 +179,31 @@ export function startMigrationWorker() {
   }
   pollQueue = new Queue<SharePointPollJob>(queueName, { connection });
   stagingQueue = new Queue<SharePointStageJob>(stagingQueueName, { connection });
+  inventoryQueue = new Queue<DiscoveryInventoryJob>(inventoryQueueName, { connection });
   pollWorker = new Worker<SharePointPollJob>(queueName, pollSharePointJob, { connection, concurrency: 2, limiter: { max: 20, duration: 1000 } });
   stagingWorker = new Worker<SharePointStageJob>(stagingQueueName, stageSharePointJob, { connection, concurrency: 1, limiter: { max: 4, duration: 1000 } });
+  inventoryWorker = new Worker<DiscoveryInventoryJob>(inventoryQueueName, inventoryDiscovery, { connection, concurrency: 1, limiter: { max: 2, duration: 1000 } });
   pollWorker.on("completed", job => console.log(`[MigrationWorker] completed poll ${job.id}`));
   stagingWorker.on("completed", job => console.log(`[MigrationWorker] completed staging ${job.id}`));
   pollWorker.on("failed", (job, error) => console.error(`[MigrationWorker] poll failed ${job?.id ?? "unknown"}:`, error.message));
   stagingWorker.on("failed", (job, error) => console.error(`[MigrationWorker] staging failed ${job?.id ?? "unknown"}:`, error.message));
-  console.log(`[MigrationWorker] BullMQ workers started on ${queueName} and ${stagingQueueName}`);
+  inventoryWorker.on("completed", job => console.log(`[MigrationWorker] completed inventory ${job.id}`));
+  inventoryWorker.on("failed", (job, error) => console.error(`[MigrationWorker] inventory failed ${job?.id ?? "unknown"}:`, error.message));
+  console.log(`[MigrationWorker] BullMQ workers started on ${queueName}, ${stagingQueueName}, and ${inventoryQueueName}`);
   return stagingWorker;
 }
 
 export async function stopMigrationWorker() {
   await stagingWorker?.close();
+  await inventoryWorker?.close();
   await pollWorker?.close();
   await stagingQueue?.close();
+  await inventoryQueue?.close();
   await pollQueue?.close();
   stagingWorker = null;
+  inventoryWorker = null;
   pollWorker = null;
   stagingQueue = null;
+  inventoryQueue = null;
   pollQueue = null;
 }

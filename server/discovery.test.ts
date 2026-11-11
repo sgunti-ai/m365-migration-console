@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTenantConnection } from "./localAuth";
-import { discoveryCsv, runSourceDiscovery, testSourceDiscoveryConnection } from "./discovery";
+import { createInventoryRun, discoveryCsv, runDetailedWorkloadInventory, runSourceDiscovery, testSourceDiscoveryConnection } from "./discovery";
 
 describe("source discovery", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -37,5 +37,44 @@ describe("source discovery", () => {
     expect(result.ok).toBe(false);
     expect(result.detail).toContain("discovery permissions are incomplete");
     expect(result.detail).toContain("Sites.Read.All");
+  });
+
+  it("builds a guided Entra consent checklist for missing workload permissions", async () => {
+    const connection = await createTenantConnection({ ownerOpenId: "local:checklist-user", label: "Source", direction: "source", tenantId: "tenant-guid", clientId: "client-guid", clientSecret: "secret" });
+    const payload = Buffer.from(JSON.stringify({ roles: ["Files.Read.All"] })).toString("base64url");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => String(input).includes("login.microsoftonline.com")
+      ? new Response(JSON.stringify({ access_token: `header.${payload}.signature` }), { status: 200 })
+      : new Response(JSON.stringify({ value: [{ displayName: "Source tenant" }], "@odata.count": 1 }), { status: 200 })));
+    const result = await runSourceDiscovery("local:checklist-user", connection!.id);
+    expect(result.permissionChecklist.length).toBeGreaterThan(0);
+    expect(result.permissionChecklist.some((item) => item.permission === "Sites.Read.All")).toBe(true);
+    expect(result.permissionChecklist[0].adminConsentUrl).toContain("tenant-guid/adminconsent");
+    expect(result.permissionChecklist[0].apiPermissionsUrl).toContain("entra.microsoft.com");
+  });
+
+  it("aggregates detailed sizes across drives, sites, mailboxes, and Teams files", async () => {
+    const connection = await createTenantConnection({ ownerOpenId: "local:inventory-user", label: "Source", direction: "source", tenantId: "tenant-guid", clientId: "client-guid", clientSecret: "secret" });
+    const roles = ["Files.Read.All", "Sites.Read.All", "Mail.ReadWrite.All", "Reports.Read.All", "Team.ReadBasic.All", "ChannelMessage.Read.All"];
+    const payload = Buffer.from(JSON.stringify({ roles })).toString("base64url");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: `header.${payload}.signature` }), { status: 200 });
+      if (url.includes("/organization")) return new Response(JSON.stringify({ value: [{ displayName: "Source tenant" }] }), { status: 200 });
+      if (url.includes("/users?")) return new Response(JSON.stringify({ value: [{ id: "user-1" }] }), { status: 200 });
+      if (url.includes("/sites?")) return new Response(JSON.stringify({ value: [{ id: "site-1" }] }), { status: 200 });
+      if (url.includes("/teams?")) return new Response(JSON.stringify({ value: [{ id: "team-1" }] }), { status: 200 });
+      if (url.includes("/reports/")) return new Response('User,Storage Used (Byte)\nuser@example.com,4096\n', { status: 200 });
+      if (url.includes("/users/user-1/drive")) return new Response(JSON.stringify({ quota: { used: 1024 } }), { status: 200 });
+      if (url.includes("/sites/site-1/drive")) return new Response(JSON.stringify({ quota: { used: 2048 } }), { status: 200 });
+      if (url.includes("/groups/team-1/drive")) return new Response(JSON.stringify({ quota: { used: 3072 } }), { status: 200 });
+      return new Response(JSON.stringify({ value: [] }), { status: 200 });
+    }));
+    const assessment = await runSourceDiscovery("local:inventory-user", connection!.id);
+    createInventoryRun("local:inventory-user", assessment.id);
+    const inventory = await runDetailedWorkloadInventory("local:inventory-user", connection!.id, assessment.id);
+    expect(inventory.status).toBe("completed");
+    expect(inventory.progress).toBe(100);
+    expect(inventory.totalSizeBytes).toBe(10240);
+    expect(inventory.workloadResults.find((item) => item.workload === "exchange")?.sizeBytes).toBe(4096);
   });
 });

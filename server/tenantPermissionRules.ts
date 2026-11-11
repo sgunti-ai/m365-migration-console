@@ -4,7 +4,7 @@ export type GraphTenantDirection = "source" | "target";
 export function requiredGraphPermissions(workload: TenantWorkload, direction: GraphTenantDirection): string[] {
   if (workload === "oneDrive") return [direction === "target" ? "Files.ReadWrite.All" : "Files.Read.All"];
   if (workload === "sharePoint") return [direction === "target" ? "Sites.ReadWrite.All" : "Sites.Read.All"];
-  if (workload === "exchange") return ["Mail.ReadWrite.All"];
+  if (workload === "exchange") return ["Mail.ReadWrite.All", "Reports.Read.All"];
   return direction === "target" ? ["Team.ReadBasic.All", "ChannelMessage.Read.All", "TeamSettings.ReadWrite.All"] : ["Team.ReadBasic.All", "ChannelMessage.Read.All"];
 }
 

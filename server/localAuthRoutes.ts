@@ -6,7 +6,8 @@ import { eq } from "drizzle-orm";
 import { localAccounts } from "../drizzle/schema";
 import { getDb } from "./db";
 import type { TenantWorkload } from "./tenantPermissionRules";
-import { discoveryCsv, latestDiscovery, runSourceDiscovery, testSourceDiscoveryConnection } from "./discovery";
+import { createInventoryRun, discoveryCsv, latestDiscovery, latestInventory, runSourceDiscovery, testSourceDiscoveryConnection } from "./discovery";
+import { enqueueDiscoveryInventory } from "./migrationWorker";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 function clientIp(req: Request) { return String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim(); }
@@ -111,7 +112,11 @@ export function registerLocalAuthRoutes(app: Express) {
     if (!user) return setError(res, 401, "Not authenticated");
     if (typeof req.body?.connectionId !== "string" || !req.body.connectionId) return setError(res, 400, "A saved source connection is required.");
     try {
-      return res.json({ ok: true, assessment: await runSourceDiscovery(user.openId, req.body.connectionId) });
+      const assessment = await runSourceDiscovery(user.openId, req.body.connectionId);
+      const inventory = createInventoryRun(user.openId, assessment.id);
+      const queued = await enqueueDiscoveryInventory({ ownerOpenId: user.openId, connectionId: req.body.connectionId, assessmentId: assessment.id });
+      if (!queued) inventory.status = "unavailable";
+      return res.json({ ok: true, assessment, inventory, inventoryQueued: queued });
     } catch (error) {
       return setError(res, 502, error instanceof Error ? error.message : "Source discovery failed.");
     }
@@ -120,7 +125,20 @@ export function registerLocalAuthRoutes(app: Express) {
   app.get("/api/workspace/discovery/latest", async (req, res) => {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
-    return res.json({ ok: true, assessment: latestDiscovery(user.openId) });
+    return res.json({ ok: true, assessment: latestDiscovery(user.openId), inventory: latestInventory(user.openId) });
+  });
+
+  app.post("/api/workspace/discovery/inventory", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const connectionId = typeof req.body?.connectionId === "string" ? req.body.connectionId : "";
+    const assessmentId = typeof req.body?.assessmentId === "string" ? req.body.assessmentId : "";
+    if (!connectionId || !assessmentId) return setError(res, 400, "A source connection and assessment are required.");
+    const existing = latestInventory(user.openId);
+    const inventory = existing && existing.assessmentId === assessmentId && ["queued", "running"].includes(existing.status) ? existing : createInventoryRun(user.openId, assessmentId);
+    const queued = await enqueueDiscoveryInventory({ ownerOpenId: user.openId, connectionId, assessmentId });
+    if (!queued) inventory.status = "unavailable";
+    return res.json({ ok: queued, inventory, error: queued ? undefined : "Redis is not configured; background inventory is unavailable until the worker is enabled." });
   });
 
   app.get("/api/workspace/discovery/export", async (req, res) => {
