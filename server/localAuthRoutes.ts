@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { localAccounts } from "../drizzle/schema";
 import { getDb } from "./db";
 import type { TenantWorkload } from "./tenantPermissionRules";
+import { discoveryCsv, latestDiscovery, runSourceDiscovery, testSourceDiscoveryConnection } from "./discovery";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 function clientIp(req: Request) { return String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim(); }
@@ -95,5 +96,40 @@ export function registerLocalAuthRoutes(app: Express) {
     await updateTenantConnectionStatus(user.openId, req.params.id, health.status === "connected" ? "Connected" : health.status === "error" ? "Error" : "Draft");
     const statusCode = health.status === "connected" ? 200 : health.status === "not_configured" ? 400 : 502;
     res.status(statusCode).json({ ok: health.status === "connected", health, error: health.status === "connected" ? undefined : health.detail });
+  });
+
+  app.post("/api/workspace/discovery/source-test", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    if (typeof req.body?.connectionId !== "string" || !req.body.connectionId) return setError(res, 400, "A saved source connection is required.");
+    const result = await testSourceDiscoveryConnection(user.openId, req.body.connectionId);
+    return res.status(result.ok ? 200 : result.status === "not_configured" ? 400 : 502).json(result);
+  });
+
+  app.post("/api/workspace/discovery/scan", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    if (typeof req.body?.connectionId !== "string" || !req.body.connectionId) return setError(res, 400, "A saved source connection is required.");
+    try {
+      return res.json({ ok: true, assessment: await runSourceDiscovery(user.openId, req.body.connectionId) });
+    } catch (error) {
+      return setError(res, 502, error instanceof Error ? error.message : "Source discovery failed.");
+    }
+  });
+
+  app.get("/api/workspace/discovery/latest", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    return res.json({ ok: true, assessment: latestDiscovery(user.openId) });
+  });
+
+  app.get("/api/workspace/discovery/export", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const assessment = latestDiscovery(user.openId);
+    if (!assessment) return setError(res, 404, "Run a discovery scan before exporting an assessment report.");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${assessment.tenantLabel.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-discovery-assessment.csv"`);
+    return res.send(discoveryCsv(assessment));
   });
 }
