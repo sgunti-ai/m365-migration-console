@@ -113,7 +113,7 @@ export function registerLocalAuthRoutes(app: Express) {
     if (typeof req.body?.connectionId !== "string" || !req.body.connectionId) return setError(res, 400, "A saved source connection is required.");
     try {
       const assessment = await runSourceDiscovery(user.openId, req.body.connectionId);
-      const inventory = createInventoryRun(user.openId, assessment.id);
+      const inventory = await createInventoryRun(user.openId, assessment.id, req.body.connectionId);
       const queued = await enqueueDiscoveryInventory({ ownerOpenId: user.openId, connectionId: req.body.connectionId, assessmentId: assessment.id });
       if (!queued) inventory.status = "unavailable";
       return res.json({ ok: true, assessment, inventory, inventoryQueued: queued });
@@ -125,7 +125,7 @@ export function registerLocalAuthRoutes(app: Express) {
   app.get("/api/workspace/discovery/latest", async (req, res) => {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
-    return res.json({ ok: true, assessment: latestDiscovery(user.openId), inventory: latestInventory(user.openId) });
+    return res.json({ ok: true, assessment: await latestDiscovery(user.openId), inventory: await latestInventory(user.openId) });
   });
 
   app.post("/api/workspace/discovery/inventory", async (req, res) => {
@@ -134,8 +134,8 @@ export function registerLocalAuthRoutes(app: Express) {
     const connectionId = typeof req.body?.connectionId === "string" ? req.body.connectionId : "";
     const assessmentId = typeof req.body?.assessmentId === "string" ? req.body.assessmentId : "";
     if (!connectionId || !assessmentId) return setError(res, 400, "A source connection and assessment are required.");
-    const existing = latestInventory(user.openId);
-    const inventory = existing && existing.assessmentId === assessmentId && ["queued", "running"].includes(existing.status) ? existing : createInventoryRun(user.openId, assessmentId);
+    const existing = await latestInventory(user.openId);
+    const inventory = existing && existing.assessmentId === assessmentId && ["queued", "running"].includes(existing.status) ? existing : await createInventoryRun(user.openId, assessmentId, connectionId);
     const queued = await enqueueDiscoveryInventory({ ownerOpenId: user.openId, connectionId, assessmentId });
     if (!queued) inventory.status = "unavailable";
     return res.json({ ok: queued, inventory, error: queued ? undefined : "Redis is not configured; background inventory is unavailable until the worker is enabled." });
@@ -144,7 +144,7 @@ export function registerLocalAuthRoutes(app: Express) {
   app.get("/api/workspace/discovery/export", async (req, res) => {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
-    const assessment = latestDiscovery(user.openId);
+    const assessment = await latestDiscovery(user.openId);
     if (!assessment) return setError(res, 404, "Run a discovery scan before exporting an assessment report.");
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${assessment.tenantLabel.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-discovery-assessment.csv"`);

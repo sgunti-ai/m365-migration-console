@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, tinyint, varchar } from "drizzle-orm/mysql-core";
+import { bigint, int, mysqlEnum, mysqlTable, text, timestamp, tinyint, varchar } from "drizzle-orm/mysql-core";
 
 /** Core user table backing OAuth and migration ownership. */
 export const users = mysqlTable("users", {
@@ -48,6 +48,42 @@ export const tenantConnections = mysqlTable("tenant_connections", {
   clientSecretCiphertext: text("clientSecretCiphertext"),
   siteUrl: varchar("siteUrl", { length: 512 }),
   status: mysqlEnum("status", ["Draft", "Connected", "Error"]).default("Draft").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const discoveryAssessments = mysqlTable("discovery_assessments", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  connectionId: varchar("connectionId", { length: 32 }).notNull(),
+  tenantId: varchar("tenantId", { length: 128 }).notNull(),
+  tenantLabel: varchar("tenantLabel", { length: 160 }).notNull(),
+  organizationName: varchar("organizationName", { length: 255 }),
+  status: mysqlEnum("status", ["completed", "blocked", "failed"]).notNull(),
+  startedAt: timestamp("startedAt").notNull(),
+  completedAt: timestamp("completedAt").notNull(),
+  workloads: text("workloads").notNull(),
+  permissionErrors: text("permissionErrors").notNull(),
+  permissionChecklist: text("permissionChecklist").notNull(),
+  inventoryId: varchar("inventoryId", { length: 32 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const discoveryInventoryRuns = mysqlTable("discovery_inventory_runs", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  assessmentId: varchar("assessmentId", { length: 32 }).notNull(),
+  connectionId: varchar("connectionId", { length: 32 }).notNull(),
+  status: mysqlEnum("status", ["queued", "running", "completed", "blocked", "failed", "unavailable"]).notNull(),
+  progress: int("progress").default(0).notNull(),
+  itemsTotal: int("itemsTotal").default(0).notNull(),
+  itemsDone: int("itemsDone").default(0).notNull(),
+  totalSizeBytes: bigint("totalSizeBytes", { mode: "number" }).default(0).notNull(),
+  workloadResults: text("workloadResults").notNull(),
+  error: text("error"),
+  startedAt: timestamp("startedAt").notNull(),
+  completedAt: timestamp("completedAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -212,6 +248,8 @@ export type InsertUser = typeof users.$inferInsert;
 export type LocalAccount = typeof localAccounts.$inferSelect;
 export type TenantConnection = typeof tenantConnections.$inferSelect;
 export type InsertTenantConnection = typeof tenantConnections.$inferInsert;
+export type DiscoveryAssessment = typeof discoveryAssessments.$inferSelect;
+export type DiscoveryInventoryRun = typeof discoveryInventoryRuns.$inferSelect;
 export type MigrationProject = typeof migrationProjects.$inferSelect;
 export type InsertMigrationProject = typeof migrationProjects.$inferInsert;
 export type MigrationWave = typeof migrationWaves.$inferSelect;

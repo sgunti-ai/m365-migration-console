@@ -43,6 +43,13 @@
       "when": 1792211836081,
       "tag": "0005_strange_grim_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1794424115709,
+      "tag": "0006_third_tiger_shark",
+      "breakpoints": true
     }
   ]
 }

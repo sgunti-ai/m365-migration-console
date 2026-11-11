@@ -33,6 +33,7 @@ export type DiscoveryWorkloadResult = {
 export type InventoryRun = {
   id: string;
   assessmentId: string;
+  connectionId: string;
   status: InventoryRunStatus;
   progress: number;
   startedAt: string;
@@ -65,7 +66,8 @@ const labels: Record<DiscoveryWorkload, string> = { oneDrive: "OneDrive", shareP
 const graphPermissionPortal = "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/ApiPermissions";
 
 async function graphGet<T>(token: string, path: string, headers: Record<string, string> = {}): Promise<T> {
-  const response = await fetch(`https://graph.microsoft.com/v1.0${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...headers }, signal: AbortSignal.timeout(30_000) });
+  const url = path.startsWith("http") ? path : `https://graph.microsoft.com/v1.0${path}`;
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...headers }, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     const error = new Error(`Graph ${response.status}: ${detail.slice(0, 300)}`) as GraphError;
@@ -73,6 +75,17 @@ async function graphGet<T>(token: string, path: string, headers: Record<string, 
     throw error;
   }
   return response.json() as Promise<T>;
+}
+
+async function graphGetAll<T>(token: string, path: string, headers: Record<string, string> = {}) {
+  const results: T[] = [];
+  let next: string | undefined = path;
+  while (next) {
+    const page: { value?: T[]; "@odata.nextLink"?: string } = await graphGet<{ value?: T[]; "@odata.nextLink"?: string }>(token, next, headers);
+    results.push(...(page.value ?? []));
+    next = page["@odata.nextLink"];
+  }
+  return results;
 }
 
 async function graphText(token: string, path: string): Promise<string> {
@@ -153,14 +166,14 @@ function parseCsvSize(csv: string) {
 async function detailedWorkloadResult(token: string, workload: DiscoveryWorkload): Promise<DiscoveryWorkloadResult> {
   try {
     if (workload === "oneDrive") {
-      const users = await graphGet<{ value?: Array<{ id?: string }> }>(token, "/users?$select=id&$top=999");
-      const ids = (users.value ?? []).map((item) => item.id).filter((id): id is string => Boolean(id));
+      const users = await graphGetAll<{ id?: string }>(token, "/users?$select=id&$top=999");
+      const ids = users.map((item) => item.id).filter((id): id is string => Boolean(id));
       const result = await sumDriveQuotas(token, ids, (id) => `/users/${encodeURIComponent(id)}/drive?$select=quota`);
       return { workload, label: labels[workload], status: "discovered", itemCount: ids.length, sizeBytes: result.sizeBytes, sizeLabel: formatBytes(result.sizeBytes), detail: `${result.processed.toLocaleString()} personal drives inventoried from Microsoft Graph quota usage.` };
     }
     if (workload === "sharePoint") {
-      const sites = await graphGet<{ value?: Array<{ id?: string }> }>(token, "/sites?search=*&$select=id&$top=999");
-      const ids = (sites.value ?? []).map((item) => item.id).filter((id): id is string => Boolean(id));
+      const sites = await graphGetAll<{ id?: string }>(token, "/sites?search=*&$select=id&$top=999");
+      const ids = sites.map((item) => item.id).filter((id): id is string => Boolean(id));
       const result = await sumDriveQuotas(token, ids, (id) => `/sites/${encodeURIComponent(id)}/drive?$select=quota`);
       return { workload, label: labels[workload], status: "discovered", itemCount: ids.length, sizeBytes: result.sizeBytes, sizeLabel: formatBytes(result.sizeBytes), detail: `${result.processed.toLocaleString()} SharePoint site drives inventoried from Microsoft Graph quota usage.` };
     }
@@ -168,8 +181,8 @@ async function detailedWorkloadResult(token: string, workload: DiscoveryWorkload
       const report = parseCsvSize(await graphText(token, "/reports/getMailboxUsageDetail(period='D7')"));
       return { workload, label: labels[workload], status: "discovered", itemCount: report.rows, sizeBytes: report.sizeBytes, sizeLabel: report.sizeBytes ? formatBytes(report.sizeBytes) : "No usage reported", detail: `${report.rows.toLocaleString()} mailboxes included in the latest Microsoft Graph 7-day usage report.` };
     }
-    const teams = await graphGet<{ value?: Array<{ id?: string }> }>(token, "/teams?$select=id&$top=999");
-    const teamIds = (teams.value ?? []).map((item) => item.id).filter((id): id is string => Boolean(id));
+    const teams = await graphGetAll<{ id?: string }>(token, "/teams?$select=id&$top=999");
+    const teamIds = teams.map((item) => item.id).filter((id): id is string => Boolean(id));
     const result = await sumDriveQuotas(token, teamIds, (id) => `/groups/${encodeURIComponent(id)}/drive?$select=quota`);
     return { workload, label: labels[workload], status: "discovered", itemCount: teamIds.length, sizeBytes: result.sizeBytes, sizeLabel: formatBytes(result.sizeBytes), detail: `${result.processed.toLocaleString()} team file drives inventoried, including channel files stored in SharePoint.` };
   } catch (error) {
@@ -217,28 +230,49 @@ export async function runSourceDiscovery(ownerOpenId: string, connectionId: stri
   const permissionErrors = permissionChecklist.map((item) => `${item.label}: ${item.permission} is required`);
   const assessment: DiscoveryAssessment = { id: `DISC-${Date.now().toString(36)}`, connectionId, tenantId: connection.tenantId, tenantLabel: connection.label, organizationName: organization.value?.[0]?.displayName, status: permissionErrors.length === workloads.length ? "blocked" : "completed", startedAt, completedAt: new Date().toISOString(), workloads: results, permissionErrors, permissionChecklist };
   assessments.set(ownerOpenId, assessment);
+  const { persistDiscoveryAssessment } = await import("./discoveryPersistence");
+  await persistDiscoveryAssessment(ownerOpenId, assessment);
   return assessment;
 }
 
-export function createInventoryRun(ownerOpenId: string, assessmentId: string): InventoryRun {
-  const run: InventoryRun = { id: `INV-${Date.now().toString(36)}`, assessmentId, status: "queued", progress: 0, startedAt: new Date().toISOString(), itemsTotal: 4, itemsDone: 0, totalSizeBytes: 0, workloadResults: [] };
-  inventoryRuns.set(ownerOpenId, run);
+export async function createInventoryRun(ownerOpenId: string, assessmentId: string, connectionId?: string): Promise<InventoryRun> {
   const assessment = assessments.get(ownerOpenId);
+  const run: InventoryRun = { id: `INV-${Date.now().toString(36)}`, assessmentId, connectionId: connectionId ?? assessment?.connectionId ?? "", status: "queued", progress: 0, startedAt: new Date().toISOString(), itemsTotal: 4, itemsDone: 0, totalSizeBytes: 0, workloadResults: [] };
+  inventoryRuns.set(ownerOpenId, run);
   if (assessment?.id === assessmentId) assessment.inventory = run;
+  const { persistInventoryRun, persistDiscoveryAssessment } = await import("./discoveryPersistence");
+  await persistInventoryRun(ownerOpenId, run);
+  if (assessment?.id === assessmentId) await persistDiscoveryAssessment(ownerOpenId, assessment);
   return run;
 }
 
-export function latestInventory(ownerOpenId: string) { return inventoryRuns.get(ownerOpenId) ?? null; }
+export async function latestInventory(ownerOpenId: string) {
+  const memory = inventoryRuns.get(ownerOpenId);
+  if (memory) return memory;
+  const { loadLatestDiscovery } = await import("./discoveryPersistence");
+  const loaded = await loadLatestDiscovery(ownerOpenId);
+  if (loaded?.inventory) inventoryRuns.set(ownerOpenId, loaded.inventory);
+  if (loaded?.assessment) assessments.set(ownerOpenId, loaded.assessment);
+  return loaded?.inventory ?? null;
+}
 
 export async function runDetailedWorkloadInventory(ownerOpenId: string, connectionId: string, assessmentId: string) {
-  const run = inventoryRuns.get(ownerOpenId);
-  const assessment = assessments.get(ownerOpenId);
+  let run = inventoryRuns.get(ownerOpenId);
+  let assessment = assessments.get(ownerOpenId);
+  if (!run || !assessment) {
+    const { loadLatestDiscovery } = await import("./discoveryPersistence");
+    const loaded = await loadLatestDiscovery(ownerOpenId);
+    if (loaded?.assessment) { assessment = loaded.assessment; assessments.set(ownerOpenId, assessment); }
+    if (loaded?.inventory) { run = loaded.inventory; inventoryRuns.set(ownerOpenId, run); }
+  }
   if (!run || !assessment || run.assessmentId !== assessmentId) throw new Error("Discovery assessment is no longer available. Run a new scan first.");
   const connection = await getTenantConnection(ownerOpenId, connectionId);
   if (!connection || connection.direction !== "source") throw new Error("Source tenant connection was not found.");
   const token = await getAppAccessTokenForConnection(connection);
   if (!token) throw new Error("Source tenant credentials are incomplete.");
   run.status = "running";
+  const { persistInventoryRun, persistDiscoveryAssessment } = await import("./discoveryPersistence");
+  await persistInventoryRun(ownerOpenId, run);
   const workloads = Object.keys(labels) as DiscoveryWorkload[];
   try {
     for (const workload of workloads) {
@@ -248,6 +282,8 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
       run.progress = Math.round((run.itemsDone / run.itemsTotal) * 100);
       run.totalSizeBytes = run.workloadResults.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0);
       assessment.workloads = assessment.workloads.map((item) => item.workload === workload ? result : item);
+      await persistInventoryRun(ownerOpenId, run);
+      await persistDiscoveryAssessment(ownerOpenId, assessment);
       if (result.status === "permission_required") {
         assessment.permissionErrors = Array.from(new Set([...assessment.permissionErrors, `${result.label}: ${result.permission} is required`]));
         assessment.permissionChecklist = buildPermissionChecklist(connection, token, [workload]);
@@ -256,16 +292,28 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
     run.status = run.workloadResults.some((item) => item.status === "permission_required") ? "blocked" : "completed";
     run.completedAt = new Date().toISOString();
     assessment.inventory = run;
+    await persistInventoryRun(ownerOpenId, run);
+    await persistDiscoveryAssessment(ownerOpenId, assessment);
     return run;
   } catch (error) {
     run.status = "failed";
     run.error = error instanceof Error ? error.message : "Detailed inventory failed.";
     assessment.inventory = run;
+    await persistInventoryRun(ownerOpenId, run);
+    await persistDiscoveryAssessment(ownerOpenId, assessment);
     throw error;
   }
 }
 
-export function latestDiscovery(ownerOpenId: string) { return assessments.get(ownerOpenId) ?? null; }
+export async function latestDiscovery(ownerOpenId: string) {
+  const memory = assessments.get(ownerOpenId);
+  if (memory) return memory;
+  const { loadLatestDiscovery } = await import("./discoveryPersistence");
+  const loaded = await loadLatestDiscovery(ownerOpenId);
+  if (loaded?.assessment) assessments.set(ownerOpenId, loaded.assessment);
+  if (loaded?.inventory) inventoryRuns.set(ownerOpenId, loaded.inventory);
+  return loaded?.assessment ?? null;
+}
 
 export function discoveryCsv(assessment: DiscoveryAssessment) {
   const rows = [["Workload", "Status", "Items", "Size", "Detail"], ...assessment.workloads.map((item) => [item.label, item.status, String(item.itemCount), item.sizeBytes === null ? item.sizeLabel : formatBytes(item.sizeBytes), item.detail])];
