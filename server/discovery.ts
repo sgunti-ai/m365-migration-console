@@ -1,12 +1,45 @@
+import { createHash } from "node:crypto";
 import { getTenantConnection } from "./localAuth";
 import { getAppAccessTokenForConnection } from "./graph";
 import { inspectGraphPermissions, requiredGraphPermissions, type TenantWorkload } from "./tenantPermissionRules";
 
 export type DiscoveryWorkload = "oneDrive" | "sharePoint" | "exchange" | "teams";
 
-type GraphError = Error & { status?: number };
+type GraphError = Error & { status?: number; retryAfterMs?: number };
 
 type InventoryRunStatus = "queued" | "running" | "completed" | "blocked" | "failed" | "unavailable";
+
+class InventoryRequestPolicy {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+  private readonly timestamps: number[] = [];
+  constructor(private readonly settings: InventorySettings) {}
+
+  private async acquire() {
+    if (this.active >= this.settings.maxConcurrency) await new Promise<void>((resolve) => this.waiters.push(resolve));
+    this.active += 1;
+    while (true) {
+      const now = Date.now();
+      while (this.timestamps[0] && now - this.timestamps[0] >= 1000) this.timestamps.shift();
+      if (this.timestamps.length < this.settings.requestsPerSecond) { this.timestamps.push(now); return; }
+      await new Promise((resolve) => setTimeout(resolve, Math.max(25, 1000 - (now - this.timestamps[0]))));
+    }
+  }
+
+  private release() { this.active -= 1; this.waiters.shift()?.(); }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      await this.acquire();
+      try { return await operation(); }
+      catch (error) {
+        const graphError = error as GraphError;
+        if (![429, 503].includes(graphError.status ?? 0) || attempt >= this.settings.maxRetries) throw error;
+        await new Promise((resolve) => setTimeout(resolve, graphError.retryAfterMs || Math.min(30_000, 500 * 2 ** attempt)));
+      } finally { this.release(); }
+    }
+  }
+}
 
 export type PermissionChecklistItem = {
   workload: DiscoveryWorkload;
@@ -28,6 +61,33 @@ export type DiscoveryWorkloadResult = {
   sizeLabel: string;
   detail: string;
   permission?: string;
+};
+
+export type InventorySettings = {
+  connectionId: string;
+  maxConcurrency: number;
+  requestsPerSecond: number;
+  maxRetries: number;
+};
+
+export type InventoryResourceRecord = {
+  id: string;
+  ownerOpenId: string;
+  runId: string;
+  assessmentId: string;
+  workload: DiscoveryWorkload;
+  resourceId: string;
+  displayName?: string;
+  status: "discovered" | "permission_required" | "unavailable" | "failed";
+  itemCount: number;
+  sizeBytes: number | null;
+  detail?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type InventoryScanOutput = {
+  result: DiscoveryWorkloadResult;
+  resources: Array<Omit<InventoryResourceRecord, "id" | "ownerOpenId" | "runId" | "assessmentId">>;
 };
 
 export type InventoryRun = {
@@ -78,16 +138,21 @@ async function graphGet<T>(token: string, path: string, headers: Record<string, 
     const detail = await response.text().catch(() => "");
     const error = new Error(`Graph ${response.status}: ${detail.slice(0, 300)}`) as GraphError;
     error.status = response.status;
+    error.retryAfterMs = Number(response.headers.get("retry-after") ?? 0) * 1000;
     throw error;
   }
   return response.json() as Promise<T>;
 }
 
-async function graphGetAll<T>(token: string, path: string, headers: Record<string, string> = {}) {
+async function governedGraphGet<T>(token: string, path: string, headers: Record<string, string>, policy?: InventoryRequestPolicy) {
+  return policy ? policy.run(() => graphGet<T>(token, path, headers)) : graphGet<T>(token, path, headers);
+}
+
+async function graphGetAll<T>(token: string, path: string, headers: Record<string, string> = {}, policy?: InventoryRequestPolicy) {
   const results: T[] = [];
   let next: string | undefined = path;
   while (next) {
-    const page: { value?: T[]; "@odata.nextLink"?: string } = await graphGet<{ value?: T[]; "@odata.nextLink"?: string }>(token, next, headers);
+    const page: { value?: T[]; "@odata.nextLink"?: string } = await governedGraphGet<{ value?: T[]; "@odata.nextLink"?: string }>(token, next, headers, policy);
     results.push(...(page.value ?? []));
     next = page["@odata.nextLink"];
   }
@@ -100,6 +165,7 @@ async function graphText(token: string, path: string): Promise<string> {
     const detail = await response.text().catch(() => "");
     const error = new Error(`Graph ${response.status}: ${detail.slice(0, 300)}`) as GraphError;
     error.status = response.status;
+    error.retryAfterMs = Number(response.headers.get("retry-after") ?? 0) * 1000;
     throw error;
   }
   return response.text();
@@ -147,16 +213,18 @@ async function workloadResult(token: string, workload: DiscoveryWorkload, direct
   }
 }
 
-async function sumDriveQuotas(token: string, ids: string[], pathFor: (id: string) => string) {
-  let sizeBytes = 0;
-  let processed = 0;
-  for (const id of ids) {
+async function inventoryDriveResources(token: string, workload: DiscoveryWorkload, descriptors: Array<{ id: string; displayName?: string }>, pathFor: (id: string) => string, policy: InventoryRequestPolicy) {
+  const resources = await Promise.all(descriptors.map(async (descriptor) => {
     try {
-      const drive = await graphGet<{ quota?: { used?: number } }>(token, pathFor(id));
-      sizeBytes += Number(drive.quota?.used ?? 0);
-    } finally { processed += 1; }
-  }
-  return { sizeBytes, processed };
+      const drive = await governedGraphGet<{ quota?: { used?: number }; owner?: { user?: { displayName?: string } } }>(token, pathFor(descriptor.id), {}, policy);
+      const sizeBytes = Number(drive.quota?.used ?? 0);
+      return { workload, resourceId: descriptor.id, displayName: descriptor.displayName ?? drive.owner?.user?.displayName, status: "discovered" as const, itemCount: 1, sizeBytes, detail: "Drive quota usage collected from Microsoft Graph.", metadata: { source: "microsoft-graph", kind: "drive" } };
+    } catch (error) {
+      const status = (error as GraphError).status === 403 ? "permission_required" as const : "failed" as const;
+      return { workload, resourceId: descriptor.id, displayName: descriptor.displayName, status, itemCount: 0, sizeBytes: null, detail: error instanceof Error ? error.message : "Resource inventory failed.", metadata: { source: "microsoft-graph", kind: "drive" } };
+    }
+  }));
+  return { sizeBytes: resources.reduce((sum, resource) => sum + (resource.sizeBytes ?? 0), 0), processed: resources.length, resources };
 }
 
 function parseCsvSize(csv: string) {
@@ -169,35 +237,48 @@ function parseCsvSize(csv: string) {
   return { rows: rows.length, sizeBytes };
 }
 
-async function detailedWorkloadResult(token: string, workload: DiscoveryWorkload): Promise<DiscoveryWorkloadResult> {
+function parseMailboxResources(csv: string) {
+  const lines = csv.split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const header = lines[0].split(",").map((item) => item.replace(/^"|"$/g, "").toLowerCase());
+  const idIndex = header.findIndex((item) => /user principal name|user name|user/.test(item));
+  const storageIndex = header.findIndex((item) => /storage.*(used|bytes)|used.*storage/.test(item));
+  return lines.slice(1).map((line) => line.split(",")).filter((row) => row.length > 1).map((row, index) => ({ workload: "exchange" as const, resourceId: String(row[idIndex] ?? `mailbox-${index + 1}`).replaceAll('"', ""), displayName: String(row[idIndex] ?? "").replaceAll('"', ""), status: "discovered" as const, itemCount: 1, sizeBytes: Number(String(row[storageIndex] ?? "0").replaceAll('"', "").replaceAll(",", "")) || 0, detail: "Mailbox usage collected from the Microsoft Graph usage report.", metadata: { source: "microsoft-graph", kind: "mailbox", reportPeriod: "D7" } }));
+}
+
+async function detailedWorkloadResult(token: string, workload: DiscoveryWorkload, policy: InventoryRequestPolicy): Promise<InventoryScanOutput> {
   try {
     if (workload === "oneDrive") {
-      const users = await graphGetAll<{ id?: string }>(token, "/users?$select=id&$top=999");
-      const ids = users.map((item) => item.id).filter((id): id is string => Boolean(id));
-      const result = await sumDriveQuotas(token, ids, (id) => `/users/${encodeURIComponent(id)}/drive?$select=quota`);
-      return { workload, label: labels[workload], status: "discovered", itemCount: ids.length, sizeBytes: result.sizeBytes, sizeLabel: formatBytes(result.sizeBytes), detail: `${result.processed.toLocaleString()} personal drives inventoried from Microsoft Graph quota usage.` };
+      const users = await graphGetAll<{ id?: string; displayName?: string; userPrincipalName?: string }>(token, "/users?$select=id,displayName,userPrincipalName&$top=999", {}, policy);
+      const descriptors = users.filter((item): item is { id: string; displayName?: string; userPrincipalName?: string } => Boolean(item.id)).map((item) => ({ id: item.id, displayName: item.displayName ?? item.userPrincipalName }));
+      const scan = await inventoryDriveResources(token, workload, descriptors, (id) => `/users/${encodeURIComponent(id)}/drive?$select=quota,owner`, policy);
+      const blocked = scan.resources.some((item) => item.status === "permission_required");
+      return { result: { workload, label: labels[workload], status: blocked ? "permission_required" : "discovered", itemCount: descriptors.length, sizeBytes: scan.sizeBytes, sizeLabel: formatBytes(scan.sizeBytes), detail: `${scan.processed.toLocaleString()} personal drives inventoried from Microsoft Graph quota usage.` }, resources: scan.resources };
     }
     if (workload === "sharePoint") {
-      const sites = await graphGetAll<{ id?: string }>(token, "/sites?search=*&$select=id&$top=999");
-      const ids = sites.map((item) => item.id).filter((id): id is string => Boolean(id));
-      const result = await sumDriveQuotas(token, ids, (id) => `/sites/${encodeURIComponent(id)}/drive?$select=quota`);
-      return { workload, label: labels[workload], status: "discovered", itemCount: ids.length, sizeBytes: result.sizeBytes, sizeLabel: formatBytes(result.sizeBytes), detail: `${result.processed.toLocaleString()} SharePoint site drives inventoried from Microsoft Graph quota usage.` };
+      const sites = await graphGetAll<{ id?: string; displayName?: string; name?: string }>(token, "/sites?search=*&$select=id,displayName,name&$top=999", {}, policy);
+      const descriptors = sites.filter((item): item is { id: string; displayName?: string; name?: string } => Boolean(item.id)).map((item) => ({ id: item.id, displayName: item.displayName ?? item.name }));
+      const scan = await inventoryDriveResources(token, workload, descriptors, (id) => `/sites/${encodeURIComponent(id)}/drive?$select=quota`, policy);
+      const blocked = scan.resources.some((item) => item.status === "permission_required");
+      return { result: { workload, label: labels[workload], status: blocked ? "permission_required" : "discovered", itemCount: descriptors.length, sizeBytes: scan.sizeBytes, sizeLabel: formatBytes(scan.sizeBytes), detail: `${scan.processed.toLocaleString()} SharePoint site drives inventoried from Microsoft Graph quota usage.` }, resources: scan.resources };
     }
     if (workload === "exchange") {
-      const report = parseCsvSize(await graphText(token, "/reports/getMailboxUsageDetail(period='D7')"));
-      return { workload, label: labels[workload], status: "discovered", itemCount: report.rows, sizeBytes: report.sizeBytes, sizeLabel: report.sizeBytes ? formatBytes(report.sizeBytes) : "No usage reported", detail: `${report.rows.toLocaleString()} mailboxes included in the latest Microsoft Graph 7-day usage report.` };
+      const csv = await policy.run(() => graphText(token, "/reports/getMailboxUsageDetail(period='D7')"));
+      const resources = parseMailboxResources(csv);
+      const sizeBytes = resources.reduce((sum, resource) => sum + (resource.sizeBytes ?? 0), 0);
+      return { result: { workload, label: labels[workload], status: "discovered", itemCount: resources.length, sizeBytes, sizeLabel: sizeBytes ? formatBytes(sizeBytes) : "No usage reported", detail: `${resources.length.toLocaleString()} mailboxes included in the latest Microsoft Graph 7-day usage report.` }, resources };
     }
-    const teams = await graphGetAll<{ id?: string }>(token, "/teams?$select=id&$top=999");
-    const teamIds = teams.map((item) => item.id).filter((id): id is string => Boolean(id));
-    const result = await sumDriveQuotas(token, teamIds, (id) => `/groups/${encodeURIComponent(id)}/drive?$select=quota`);
-    return { workload, label: labels[workload], status: "discovered", itemCount: teamIds.length, sizeBytes: result.sizeBytes, sizeLabel: formatBytes(result.sizeBytes), detail: `${result.processed.toLocaleString()} team file drives inventoried, including channel files stored in SharePoint.` };
+    const teams = await graphGetAll<{ id?: string; displayName?: string }>(token, "/teams?$select=id,displayName&$top=999", {}, policy);
+    const descriptors = teams.filter((item): item is { id: string; displayName?: string } => Boolean(item.id)).map((item) => ({ id: item.id, displayName: item.displayName }));
+    const scan = await inventoryDriveResources(token, workload, descriptors, (id) => `/groups/${encodeURIComponent(id)}/drive?$select=quota`, policy);
+    const blocked = scan.resources.some((item) => item.status === "permission_required");
+    return { result: { workload, label: labels[workload], status: blocked ? "permission_required" : "discovered", itemCount: descriptors.length, sizeBytes: scan.sizeBytes, sizeLabel: formatBytes(scan.sizeBytes), detail: `${scan.processed.toLocaleString()} team file drives inventoried, including channel files stored in SharePoint.` }, resources: scan.resources };
   } catch (error) {
     const status = (error as GraphError).status;
     const permission = status === 403 ? requiredGraphPermissions(workload, "source").find((item) => item === "Reports.Read.All" || item.startsWith("Files.")) ?? requiredGraphPermissions(workload, "source")[0] : undefined;
-    return { workload, label: labels[workload], status: permission ? "permission_required" : "unavailable", itemCount: 0, sizeBytes: null, sizeLabel: "Unavailable", permission, detail: permission ? `Background inventory requires ${permission}. Grant admin consent and retry this inventory.` : error instanceof Error ? error.message : "Detailed inventory failed." };
+    return { result: { workload, label: labels[workload], status: permission ? "permission_required" : "unavailable", itemCount: 0, sizeBytes: null, sizeLabel: "Unavailable", permission, detail: permission ? `Background inventory requires ${permission}. Grant admin consent and retry this inventory.` : error instanceof Error ? error.message : "Detailed inventory failed." }, resources: [] };
   }
 }
-
 function formatBytes(bytes: number) {
   if (!bytes) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -296,18 +377,22 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
   const token = await getAppAccessTokenForConnection(connection);
   if (!token) throw new Error("Source tenant credentials are incomplete.");
   run.status = "running";
-  const { persistInventoryRun, persistDiscoveryAssessment } = await import("./discoveryPersistence");
+  const { loadInventorySettings, persistInventoryResources, persistInventoryRun, persistDiscoveryAssessment } = await import("./discoveryPersistence");
+  const settings = await loadInventorySettings(ownerOpenId, connectionId);
+  const policy = new InventoryRequestPolicy(settings);
   await persistInventoryRun(ownerOpenId, run);
   publishInventoryProgress(ownerOpenId, run, assessment.workloads);
   const workloads = Object.keys(labels) as DiscoveryWorkload[];
   try {
     for (const workload of workloads) {
-      const result = await detailedWorkloadResult(token, workload);
+      const scan = await detailedWorkloadResult(token, workload, policy);
+      const result = scan.result;
       run.workloadResults = [...run.workloadResults.filter((item) => item.workload !== workload), result];
       run.itemsDone += 1;
       run.progress = Math.round((run.itemsDone / run.itemsTotal) * 100);
       run.totalSizeBytes = run.workloadResults.reduce((sum, item) => sum + (item.sizeBytes ?? 0), 0);
       assessment.workloads = assessment.workloads.map((item) => item.workload === workload ? result : item);
+      await persistInventoryResources(scan.resources.map((resource) => ({ ...resource, id: `${run.id}:${workload}:${createHash("sha256").update(resource.resourceId).digest("hex")}`, ownerOpenId, runId: run.id, assessmentId: run.assessmentId })));
       await persistInventoryRun(ownerOpenId, run);
       await persistDiscoveryAssessment(ownerOpenId, assessment);
       publishInventoryProgress(ownerOpenId, run, assessment.workloads);

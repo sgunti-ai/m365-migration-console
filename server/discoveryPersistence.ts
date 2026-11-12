@@ -1,7 +1,7 @@
-import { desc, eq } from "drizzle-orm";
-import { discoveryAssessments, discoveryInventoryRuns } from "../drizzle/schema";
+import { and, desc, eq } from "drizzle-orm";
+import { discoveryAssessments, discoveryInventoryResources, discoveryInventoryRuns, discoveryInventorySettings } from "../drizzle/schema";
 import { getDb } from "./db";
-import type { DiscoveryAssessment, InventoryRun } from "./discovery";
+import type { DiscoveryAssessment, InventoryResourceRecord, InventoryRun, InventorySettings } from "./discovery";
 
 function json(value: unknown) { return JSON.stringify(value); }
 
@@ -79,6 +79,56 @@ export async function persistInventoryRun(ownerOpenId: string, run: InventoryRun
     console.warn("[DiscoveryPersistence] Could not persist inventory run:", error);
     return false;
   }
+}
+
+const defaultInventorySettings: Omit<InventorySettings, "connectionId"> = { maxConcurrency: 4, requestsPerSecond: 8, maxRetries: 4 };
+
+export async function loadInventorySettings(ownerOpenId: string, connectionId: string): Promise<InventorySettings> {
+  const db = await getDb();
+  if (!db) return { connectionId, ...defaultInventorySettings };
+  try {
+    const rows = await db.select().from(discoveryInventorySettings).where(and(eq(discoveryInventorySettings.ownerOpenId, ownerOpenId), eq(discoveryInventorySettings.connectionId, connectionId))).limit(1);
+    const row = rows[0];
+    return row ? { connectionId, maxConcurrency: row.maxConcurrency, requestsPerSecond: row.requestsPerSecond, maxRetries: row.maxRetries } : { connectionId, ...defaultInventorySettings };
+  } catch (error) {
+    console.warn("[DiscoveryPersistence] Could not load inventory settings:", error);
+    return { connectionId, ...defaultInventorySettings };
+  }
+}
+
+export async function persistInventorySettings(ownerOpenId: string, settings: InventorySettings) {
+  const db = await getDb();
+  if (!db) return false;
+  try {
+    await db.insert(discoveryInventorySettings).values({ connectionId: settings.connectionId, ownerOpenId, maxConcurrency: settings.maxConcurrency, requestsPerSecond: settings.requestsPerSecond, maxRetries: settings.maxRetries }).onDuplicateKeyUpdate({ set: { ownerOpenId, maxConcurrency: settings.maxConcurrency, requestsPerSecond: settings.requestsPerSecond, maxRetries: settings.maxRetries } });
+    return true;
+  } catch (error) {
+    console.warn("[DiscoveryPersistence] Could not persist inventory settings:", error);
+    return false;
+  }
+}
+
+export async function persistInventoryResources(records: InventoryResourceRecord[]) {
+  const db = await getDb();
+  if (!db || !records.length) return false;
+  try {
+    for (const record of records) {
+      await db.insert(discoveryInventoryResources).values({ id: record.id, ownerOpenId: record.ownerOpenId, runId: record.runId, assessmentId: record.assessmentId, workload: record.workload, resourceId: record.resourceId, displayName: record.displayName ?? null, status: record.status, itemCount: record.itemCount, sizeBytes: record.sizeBytes, detail: record.detail ?? null, metadata: record.metadata ? json(record.metadata) : null }).onDuplicateKeyUpdate({ set: { displayName: record.displayName ?? null, status: record.status, itemCount: record.itemCount, sizeBytes: record.sizeBytes, detail: record.detail ?? null, metadata: record.metadata ? json(record.metadata) : null } });
+    }
+    return true;
+  } catch (error) {
+    console.warn("[DiscoveryPersistence] Could not persist inventory resources:", error);
+    return false;
+  }
+}
+
+export async function listInventoryResources(ownerOpenId: string, runId: string, workload?: string) {
+  const db = await getDb();
+  if (!db) return [];
+  const filters = [eq(discoveryInventoryResources.ownerOpenId, ownerOpenId), eq(discoveryInventoryResources.runId, runId)];
+  if (workload) filters.push(eq(discoveryInventoryResources.workload, workload));
+  const rows = await db.select().from(discoveryInventoryResources).where(and(...filters)).orderBy(desc(discoveryInventoryResources.sizeBytes));
+  return rows.map((row) => ({ ...row, sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes), metadata: row.metadata ? parseJson<Record<string, unknown>>(row.metadata, {}) : undefined }));
 }
 
 function parseJson<T>(value: string, fallback: T): T {

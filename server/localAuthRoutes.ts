@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import { createHash } from "node:crypto";
-import { createTenantConnection, ensureBootstrapAdmin, getLocalUserFromToken, hashPassword, listTenantConnections, loginLocal, revokeLocalSession, updateTenantConnectionStatus, validatePasswordPolicy, verifyPassword, LOCAL_SESSION_COOKIE } from "./localAuth";
+import { createTenantConnection, ensureBootstrapAdmin, getLocalUserFromToken, getTenantConnection, hashPassword, listTenantConnections, loginLocal, revokeLocalSession, updateTenantConnectionStatus, validatePasswordPolicy, verifyPassword, LOCAL_SESSION_COOKIE } from "./localAuth";
 import { checkGraphHealthForConnection, checkGraphHealthForCredentials } from "./graph";
 import { eq } from "drizzle-orm";
 import { localAccounts } from "../drizzle/schema";
@@ -8,6 +8,7 @@ import { getDb } from "./db";
 import type { TenantWorkload } from "./tenantPermissionRules";
 import { createInventoryRun, discoveryCsv, latestDiscovery, latestInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
 import { enqueueDiscoveryInventory } from "./migrationWorker";
+import { listInventoryResources, loadInventorySettings, persistInventorySettings } from "./discoveryPersistence";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 function clientIp(req: Request) { return String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim(); }
@@ -156,6 +157,39 @@ export function registerLocalAuthRoutes(app: Express) {
     const queued = await enqueueDiscoveryInventory({ ownerOpenId: user.openId, connectionId, assessmentId });
     if (!queued) inventory.status = "unavailable";
     return res.json({ ok: queued, inventory, error: queued ? undefined : "Redis is not configured; background inventory is unavailable until the worker is enabled." });
+  });
+
+  app.get("/api/workspace/discovery/inventory/settings", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const connectionId = typeof req.query.connectionId === "string" ? req.query.connectionId : "";
+    const connection = await getTenantConnection(user.openId, connectionId);
+    if (!connection || connection.direction !== "source") return setError(res, 404, "Source tenant connection was not found.");
+    return res.json({ ok: true, settings: await loadInventorySettings(user.openId, connectionId) });
+  });
+
+  app.put("/api/workspace/discovery/inventory/settings", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const connectionId = typeof req.body?.connectionId === "string" ? req.body.connectionId : "";
+    const connection = await getTenantConnection(user.openId, connectionId);
+    if (!connection || connection.direction !== "source") return setError(res, 404, "Source tenant connection was not found.");
+    const maxConcurrency = Number(req.body?.maxConcurrency);
+    const requestsPerSecond = Number(req.body?.requestsPerSecond);
+    const maxRetries = Number(req.body?.maxRetries);
+    if (![maxConcurrency, requestsPerSecond, maxRetries].every(Number.isInteger) || maxConcurrency < 1 || maxConcurrency > 32 || requestsPerSecond < 1 || requestsPerSecond > 120 || maxRetries < 0 || maxRetries > 8) return setError(res, 400, "Concurrency must be 1–32, requests per second 1–120, and retries 0–8.");
+    const settings = { connectionId, maxConcurrency, requestsPerSecond, maxRetries };
+    await persistInventorySettings(user.openId, settings);
+    return res.json({ ok: true, settings });
+  });
+
+  app.get("/api/workspace/discovery/inventory/resources", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const runId = typeof req.query.runId === "string" ? req.query.runId : "";
+    const workload = typeof req.query.workload === "string" ? req.query.workload : undefined;
+    if (!runId) return setError(res, 400, "An inventory run ID is required.");
+    return res.json({ ok: true, resources: await listInventoryResources(user.openId, runId, workload) });
   });
 
   app.get("/api/workspace/discovery/export", async (req, res) => {

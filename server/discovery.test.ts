@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTenantConnection } from "./localAuth";
 import { createInventoryRun, discoveryCsv, runDetailedWorkloadInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
+import { listInventoryResources, persistInventorySettings } from "./discoveryPersistence";
 
 describe("source discovery", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -56,6 +57,8 @@ describe("source discovery", () => {
     const connection = await createTenantConnection({ ownerOpenId: "local:inventory-user", label: "Source", direction: "source", tenantId: "tenant-guid", clientId: "client-guid", clientSecret: "secret" });
     const roles = ["Files.Read.All", "Sites.Read.All", "Mail.ReadWrite.All", "Reports.Read.All", "Team.ReadBasic.All", "ChannelMessage.Read.All"];
     const payload = Buffer.from(JSON.stringify({ roles })).toString("base64url");
+    let activeDriveRequests = 0;
+    let maxDriveRequests = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("login.microsoftonline.com")) return new Response(JSON.stringify({ access_token: `header.${payload}.signature` }), { status: 200 });
@@ -67,6 +70,12 @@ describe("source discovery", () => {
       if (url.includes("/teams?page=2")) return new Response(JSON.stringify({ value: [{ id: "team-2" }] }), { status: 200 });
       if (url.includes("/teams?")) return new Response(JSON.stringify({ value: [{ id: "team-1" }], "@odata.nextLink": "https://graph.microsoft.com/v1.0/teams?page=2" }), { status: 200 });
       if (url.includes("/reports/")) return new Response('User,Storage Used (Byte)\nuser@example.com,4096\n', { status: 200 });
+      if (url.includes("/drive")) {
+        activeDriveRequests += 1;
+        maxDriveRequests = Math.max(maxDriveRequests, activeDriveRequests);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeDriveRequests -= 1;
+      }
       if (url.includes("/users/user-1/drive")) return new Response(JSON.stringify({ quota: { used: 1024 } }), { status: 200 });
       if (url.includes("/users/user-2/drive")) return new Response(JSON.stringify({ quota: { used: 2048 } }), { status: 200 });
       if (url.includes("/sites/site-1/drive")) return new Response(JSON.stringify({ quota: { used: 2048 } }), { status: 200 });
@@ -77,6 +86,7 @@ describe("source discovery", () => {
     }));
     const assessment = await runSourceDiscovery("local:inventory-user", connection!.id);
     await createInventoryRun("local:inventory-user", assessment.id, connection!.id);
+    await persistInventorySettings("local:inventory-user", { connectionId: connection!.id, maxConcurrency: 1, requestsPerSecond: 120, maxRetries: 2 });
     const progressEvents: number[] = [];
     const unsubscribe = subscribeInventoryProgress("local:inventory-user", assessment.id, (event) => progressEvents.push(event.inventory.progress));
     const inventory = await runDetailedWorkloadInventory("local:inventory-user", connection!.id, assessment.id);
@@ -87,6 +97,9 @@ describe("source discovery", () => {
     expect(inventory.workloadResults.find((item) => item.workload === "exchange")?.sizeBytes).toBe(4096);
     expect(progressEvents).toContain(25);
     expect(progressEvents).toContain(100);
-    expect(inventory.workloadResults.find((item) => item.workload === "exchange")?.sizeBytes).toBe(4096);
+    expect(maxDriveRequests).toBe(1);
+    const resources = await listInventoryResources("local:inventory-user", inventory.id);
+    expect(resources).toHaveLength(7);
+    expect(resources.find((resource) => resource.workload === "exchange")?.sizeBytes).toBe(4096);
   });
 });

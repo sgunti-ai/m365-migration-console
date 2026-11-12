@@ -88,6 +88,33 @@ export const discoveryInventoryRuns = mysqlTable("discovery_inventory_runs", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const discoveryInventorySettings = mysqlTable("discovery_inventory_settings", {
+  connectionId: varchar("connectionId", { length: 32 }).primaryKey(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  maxConcurrency: int("maxConcurrency").default(4).notNull(),
+  requestsPerSecond: int("requestsPerSecond").default(8).notNull(),
+  maxRetries: int("maxRetries").default(4).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const discoveryInventoryResources = mysqlTable("discovery_inventory_resources", {
+  id: varchar("id", { length: 255 }).primaryKey(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  runId: varchar("runId", { length: 32 }).notNull(),
+  assessmentId: varchar("assessmentId", { length: 32 }).notNull(),
+  workload: varchar("workload", { length: 32 }).notNull(),
+  resourceId: varchar("resourceId", { length: 512 }).notNull(),
+  displayName: varchar("displayName", { length: 255 }),
+  status: mysqlEnum("status", ["discovered", "permission_required", "unavailable", "failed"]).notNull(),
+  itemCount: int("itemCount").default(0).notNull(),
+  sizeBytes: bigint("sizeBytes", { mode: "number" }),
+  detail: text("detail"),
+  metadata: text("metadata"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 const migrationPhaseValues = ["Assessment", "Mapping", "Planning", "Pilot", "Migration", "Validation", "Cutover", "Completed"] as const;
 
 export const migrationProjects = mysqlTable("migration_projects", {
@@ -250,6 +277,8 @@ export type TenantConnection = typeof tenantConnections.$inferSelect;
 export type InsertTenantConnection = typeof tenantConnections.$inferInsert;
 export type DiscoveryAssessment = typeof discoveryAssessments.$inferSelect;
 export type DiscoveryInventoryRun = typeof discoveryInventoryRuns.$inferSelect;
+export type DiscoveryInventorySetting = typeof discoveryInventorySettings.$inferSelect;
+export type DiscoveryInventoryResource = typeof discoveryInventoryResources.$inferSelect;
 export type MigrationProject = typeof migrationProjects.$inferSelect;
 export type InsertMigrationProject = typeof migrationProjects.$inferInsert;
 export type MigrationWave = typeof migrationWaves.$inferSelect;

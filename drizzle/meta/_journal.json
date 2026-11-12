@@ -50,6 +50,13 @@
       "when": 1794424115709,
       "tag": "0006_third_tiger_shark",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1794514614855,
+      "tag": "0007_clean_synch",
+      "breakpoints": true
     }
   ]
 }
