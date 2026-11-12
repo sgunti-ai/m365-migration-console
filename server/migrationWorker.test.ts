@@ -16,5 +16,7 @@ describe("migration worker", () => {
     expect(telemetry.enabled).toBe(false);
     expect(telemetry.queues.staging.waiting).toBe(0);
     expect(telemetry.counters.retryRate).toBe(0);
+    expect(telemetry.counters.inventoryRetryRate).toBe(0);
+    expect(telemetry.counters.inventoryThrottles).toBe(0);
   });
 });

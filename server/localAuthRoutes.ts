@@ -7,8 +7,8 @@ import { localAccounts } from "../drizzle/schema";
 import { getDb } from "./db";
 import type { TenantWorkload } from "./tenantPermissionRules";
 import { createInventoryRun, discoveryCsv, latestDiscovery, latestInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
-import { enqueueDiscoveryInventory } from "./migrationWorker";
-import { listInventoryResources, loadInventorySettings, persistInventorySettings } from "./discoveryPersistence";
+import { enqueueDiscoveryInventory, getWorkerTelemetry } from "./migrationWorker";
+import { loadInventorySettings, pageInventoryResources, persistInventorySettings } from "./discoveryPersistence";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 function clientIp(req: Request) { return String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim(); }
@@ -188,8 +188,36 @@ export function registerLocalAuthRoutes(app: Express) {
     if (!user) return setError(res, 401, "Not authenticated");
     const runId = typeof req.query.runId === "string" ? req.query.runId : "";
     const workload = typeof req.query.workload === "string" ? req.query.workload : undefined;
+    const offset = Number(req.query.offset ?? 0);
+    const limit = Number(req.query.limit ?? 50);
     if (!runId) return setError(res, 400, "An inventory run ID is required.");
-    return res.json({ ok: true, resources: await listInventoryResources(user.openId, runId, workload) });
+    return res.json({ ok: true, ...(await pageInventoryResources(user.openId, runId, workload, Number.isFinite(offset) ? offset : 0, Number.isFinite(limit) ? limit : 50)) });
+  });
+
+  app.get("/api/workspace/discovery/inventory/resources.csv", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const runId = typeof req.query.runId === "string" ? req.query.runId : "";
+    const workload = typeof req.query.workload === "string" ? req.query.workload : undefined;
+    if (!runId) return setError(res, 400, "An inventory run ID is required.");
+    const escapeCsv = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="inventory-${runId.toLowerCase()}.csv"`);
+    res.write("Workload,Resource ID,Display Name,Status,Items,Size Bytes,Detail\n");
+    let offset = 0;
+    while (true) {
+      const page = await pageInventoryResources(user.openId, runId, workload, offset, 200);
+      for (const resource of page.resources) res.write([resource.workload, resource.resourceId, resource.displayName, resource.status, resource.itemCount, resource.sizeBytes, resource.detail].map(escapeCsv).join(",") + "\n");
+      if (page.nextOffset === null) break;
+      offset = page.nextOffset;
+    }
+    return res.end();
+  });
+
+  app.get("/api/workspace/discovery/inventory/telemetry", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    return res.json({ ok: true, telemetry: await getWorkerTelemetry() });
   });
 
   app.get("/api/workspace/discovery/export", async (req, res) => {

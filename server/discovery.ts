@@ -13,7 +13,7 @@ class InventoryRequestPolicy {
   private active = 0;
   private readonly waiters: Array<() => void> = [];
   private readonly timestamps: number[] = [];
-  constructor(private readonly settings: InventorySettings) {}
+  constructor(private readonly settings: InventorySettings, private readonly options: InventoryRunOptions = {}) {}
 
   private async acquire() {
     if (this.active >= this.settings.maxConcurrency) await new Promise<void>((resolve) => this.waiters.push(resolve));
@@ -35,6 +35,8 @@ class InventoryRequestPolicy {
       catch (error) {
         const graphError = error as GraphError;
         if (![429, 503].includes(graphError.status ?? 0) || attempt >= this.settings.maxRetries) throw error;
+        this.options.onThrottle?.();
+        this.options.onRetry?.();
         await new Promise((resolve) => setTimeout(resolve, graphError.retryAfterMs || Math.min(30_000, 500 * 2 ** attempt)));
       } finally { this.release(); }
     }
@@ -69,6 +71,8 @@ export type InventorySettings = {
   requestsPerSecond: number;
   maxRetries: number;
 };
+
+export type InventoryRunOptions = { onThrottle?: () => void; onRetry?: () => void };
 
 export type InventoryResourceRecord = {
   id: string;
@@ -362,7 +366,7 @@ export async function latestInventory(ownerOpenId: string) {
   return loaded?.inventory ?? null;
 }
 
-export async function runDetailedWorkloadInventory(ownerOpenId: string, connectionId: string, assessmentId: string) {
+export async function runDetailedWorkloadInventory(ownerOpenId: string, connectionId: string, assessmentId: string, options: InventoryRunOptions = {}) {
   let run = inventoryRuns.get(ownerOpenId);
   let assessment = assessments.get(ownerOpenId);
   if (!run || !assessment) {
@@ -379,7 +383,7 @@ export async function runDetailedWorkloadInventory(ownerOpenId: string, connecti
   run.status = "running";
   const { loadInventorySettings, persistInventoryResources, persistInventoryRun, persistDiscoveryAssessment } = await import("./discoveryPersistence");
   const settings = await loadInventorySettings(ownerOpenId, connectionId);
-  const policy = new InventoryRequestPolicy(settings);
+  const policy = new InventoryRequestPolicy(settings, options);
   await persistInventoryRun(ownerOpenId, run);
   publishInventoryProgress(ownerOpenId, run, assessment.workloads);
   const workloads = Object.keys(labels) as DiscoveryWorkload[];

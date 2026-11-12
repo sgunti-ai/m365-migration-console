@@ -13,7 +13,7 @@ export type WorkerTelemetry = {
   sampledAt: string;
   uptimeSeconds: number;
   queues: { staging: QueueCounts; polling: QueueCounts; inventory: QueueCounts };
-  counters: { jobsStarted: number; jobsCompleted: number; jobsFailed: number; retries: number; throttles: number; stagedFiles: number; stagedBytes: number; inventoryStarted: number; inventoryCompleted: number; inventoryFailed: number; throughputMbHr: number; retryRate: number; failedJobRate: number };
+  counters: { jobsStarted: number; jobsCompleted: number; jobsFailed: number; retries: number; throttles: number; stagedFiles: number; stagedBytes: number; inventoryStarted: number; inventoryCompleted: number; inventoryFailed: number; inventoryRetries: number; inventoryThrottles: number; inventoryRetryRate: number; throughputMbHr: number; retryRate: number; failedJobRate: number };
 };
 
 const queueName = "m365-sharepoint-migration";
@@ -26,7 +26,7 @@ let pollWorker: Worker<SharePointPollJob> | null = null;
 let stagingWorker: Worker<SharePointStageJob> | null = null;
 let inventoryWorker: Worker<DiscoveryInventoryJob> | null = null;
 const telemetryStartedAt = Date.now();
-const counters = { jobsStarted: 0, jobsCompleted: 0, jobsFailed: 0, retries: 0, throttles: 0, stagedFiles: 0, stagedBytes: 0, inventoryStarted: 0, inventoryCompleted: 0, inventoryFailed: 0 };
+const counters = { jobsStarted: 0, jobsCompleted: 0, jobsFailed: 0, retries: 0, throttles: 0, stagedFiles: 0, stagedBytes: 0, inventoryStarted: 0, inventoryCompleted: 0, inventoryFailed: 0, inventoryRetries: 0, inventoryThrottles: 0 };
 
 const emptyCounts = (): QueueCounts => ({ waiting: 0, active: 0, delayed: 0, completed: 0, failed: 0 });
 const normalizeCounts = (counts: Record<string, number>): QueueCounts => ({ waiting: counts.waiting ?? 0, active: counts.active ?? 0, delayed: counts.delayed ?? 0, completed: counts.completed ?? 0, failed: counts.failed ?? 0 });
@@ -41,7 +41,8 @@ export async function getWorkerTelemetry(): Promise<WorkerTelemetry> {
   const uptimeSeconds = Math.max(1, Math.round((Date.now() - telemetryStartedAt) / 1000));
   const attempts = counters.jobsCompleted + counters.jobsFailed + counters.retries;
   const finished = counters.jobsCompleted + counters.jobsFailed;
-  return { enabled: Boolean(stagingQueue && pollQueue && inventoryQueue), sampledAt: new Date().toISOString(), uptimeSeconds, queues: { staging: normalizeCounts(staging), polling: normalizeCounts(polling), inventory: normalizeCounts(inventory) }, counters: { ...counters, throughputMbHr: Math.round(counters.stagedBytes / 1024 / 1024 * 3600 / uptimeSeconds), retryRate: attempts ? Math.round(counters.retries / attempts * 100) : 0, failedJobRate: finished ? Math.round(counters.jobsFailed / finished * 100) : 0 } };
+  const inventoryAttempts = counters.inventoryCompleted + counters.inventoryFailed + counters.inventoryRetries;
+  return { enabled: Boolean(stagingQueue && pollQueue && inventoryQueue), sampledAt: new Date().toISOString(), uptimeSeconds, queues: { staging: normalizeCounts(staging), polling: normalizeCounts(polling), inventory: normalizeCounts(inventory) }, counters: { ...counters, inventoryRetryRate: inventoryAttempts ? Math.round(counters.inventoryRetries / inventoryAttempts * 100) : 0, throughputMbHr: Math.round(counters.stagedBytes / 1024 / 1024 * 3600 / uptimeSeconds), retryRate: attempts ? Math.round(counters.retries / attempts * 100) : 0, failedJobRate: finished ? Math.round(counters.jobsFailed / finished * 100) : 0 } };
 }
 
 function redisConnection() {
@@ -161,12 +162,14 @@ async function pollSharePointJob(job: Job<SharePointPollJob>) {
 async function inventoryDiscovery(job: Job<DiscoveryInventoryJob>) {
   counters.inventoryStarted += 1;
   try {
-    const result = await runDetailedWorkloadInventory(job.data.ownerOpenId, job.data.connectionId, job.data.assessmentId);
+    const result = await runDetailedWorkloadInventory(job.data.ownerOpenId, job.data.connectionId, job.data.assessmentId, { onThrottle: () => { counters.throttles += 1; counters.inventoryThrottles += 1; }, onRetry: () => { counters.retries += 1; counters.inventoryRetries += 1; } });
     counters.inventoryCompleted += 1;
     return { status: result.status, progress: result.progress, totalSizeBytes: result.totalSizeBytes };
   } catch (error) {
     counters.inventoryFailed += 1;
-    if (isThrottle(error instanceof Error ? error.message : "")) counters.throttles += 1;
+    const detail = error instanceof Error ? error.message : "";
+    if (isThrottle(detail)) { counters.throttles += 1; counters.inventoryThrottles += 1; }
+    if (job.attemptsMade + 1 < Number(job.opts.attempts ?? 1)) counters.inventoryRetries += 1;
     throw error;
   }
 }

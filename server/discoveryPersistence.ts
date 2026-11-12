@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq } from "drizzle-orm";
 import { discoveryAssessments, discoveryInventoryResources, discoveryInventoryRuns, discoveryInventorySettings } from "../drizzle/schema";
 import { getDb } from "./db";
 import type { DiscoveryAssessment, InventoryResourceRecord, InventoryRun, InventorySettings } from "./discovery";
@@ -122,13 +122,23 @@ export async function persistInventoryResources(records: InventoryResourceRecord
   }
 }
 
-export async function listInventoryResources(ownerOpenId: string, runId: string, workload?: string) {
+export async function pageInventoryResources(ownerOpenId: string, runId: string, workload?: string, offset = 0, limit = 50) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) return { resources: [], total: 0, offset, limit, nextOffset: null };
   const filters = [eq(discoveryInventoryResources.ownerOpenId, ownerOpenId), eq(discoveryInventoryResources.runId, runId)];
   if (workload) filters.push(eq(discoveryInventoryResources.workload, workload));
-  const rows = await db.select().from(discoveryInventoryResources).where(and(...filters)).orderBy(desc(discoveryInventoryResources.sizeBytes));
-  return rows.map((row) => ({ ...row, sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes), metadata: row.metadata ? parseJson<Record<string, unknown>>(row.metadata, {}) : undefined }));
+  const safeLimit = Math.min(200, Math.max(1, Math.floor(limit)));
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const [rows, totalRows] = await Promise.all([
+    db.select().from(discoveryInventoryResources).where(and(...filters)).orderBy(desc(discoveryInventoryResources.sizeBytes)).limit(safeLimit).offset(safeOffset),
+    db.select({ value: count() }).from(discoveryInventoryResources).where(and(...filters)),
+  ]);
+  const total = Number(totalRows[0]?.value ?? 0);
+  return { resources: rows.map((row) => ({ ...row, sizeBytes: row.sizeBytes === null ? null : Number(row.sizeBytes), metadata: row.metadata ? parseJson<Record<string, unknown>>(row.metadata, {}) : undefined })), total, offset: safeOffset, limit: safeLimit, nextOffset: safeOffset + rows.length < total ? safeOffset + rows.length : null };
+}
+
+export async function listInventoryResources(ownerOpenId: string, runId: string, workload?: string) {
+  return (await pageInventoryResources(ownerOpenId, runId, workload, 0, 200)).resources;
 }
 
 function parseJson<T>(value: string, fallback: T): T {

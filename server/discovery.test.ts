@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTenantConnection } from "./localAuth";
 import { createInventoryRun, discoveryCsv, runDetailedWorkloadInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
-import { listInventoryResources, persistInventorySettings } from "./discoveryPersistence";
+import { listInventoryResources, pageInventoryResources, persistInventorySettings } from "./discoveryPersistence";
 
 describe("source discovery", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -101,5 +101,9 @@ describe("source discovery", () => {
     const resources = await listInventoryResources("local:inventory-user", inventory.id);
     expect(resources).toHaveLength(7);
     expect(resources.find((resource) => resource.workload === "exchange")?.sizeBytes).toBe(4096);
+    const firstPage = await pageInventoryResources("local:inventory-user", inventory.id, undefined, 0, 2);
+    expect(firstPage.resources).toHaveLength(2);
+    expect(firstPage.total).toBe(7);
+    expect(firstPage.nextOffset).toBe(2);
   });
 });
