@@ -9,7 +9,7 @@ import type { TenantWorkload } from "./tenantPermissionRules";
 import { createInventoryRun, discoveryCsv, latestDiscovery, latestInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
 import { enqueueDiscoveryInventory, getWorkerTelemetry } from "./migrationWorker";
 import { loadInventorySettings, pageInventoryResources, persistInventorySettings } from "./discoveryPersistence";
-import { createMappingPolicy, listMappingPolicies, listMappings, mappingsCsv, updateMappingDecision, type CollisionAction } from "./identityMapping";
+import { createMappingPolicy, listMappingPolicies, listMappings, mappingsCsv, provisionMappingTarget, updateMappingDecision, validateMappingTargetReadiness, type CollisionAction } from "./identityMapping";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 function clientIp(req: Request) { return String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim(); }
@@ -263,7 +263,22 @@ export function registerLocalAuthRoutes(app: Express) {
     const user = await getLocalUserFromToken(tokenFrom(req));
     if (!user) return setError(res, 401, "Not authenticated");
     if (!["approve", "reject", "block"].includes(req.body?.decision)) return setError(res, 400, "Decision must be approve, reject, or block.");
-    return res.json(await updateMappingDecision(user.openId, req.params.id, req.body.decision));
+    try { return res.json(await updateMappingDecision(user.openId, req.params.id, req.body.decision)); } catch (error) { return setError(res, 412, error instanceof Error ? error.message : "Mapping decision could not be applied."); }
+  });
+
+  app.post("/api/workspace/identity-mapping/mappings/:id/readiness", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    try { return res.json({ ok: true, readiness: await validateMappingTargetReadiness(user.openId, req.params.id, typeof req.body?.workload === "string" ? req.body.workload : "oneDrive") }); } catch (error) { return setError(res, 502, error instanceof Error ? error.message : "Target readiness validation failed."); }
+  });
+
+  app.post("/api/workspace/identity-mapping/mappings/:id/provision", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const temporaryPassword = typeof req.body?.temporaryPassword === "string" ? req.body.temporaryPassword : "";
+    const usageLocation = typeof req.body?.usageLocation === "string" ? req.body.usageLocation.trim() : "";
+    if (!temporaryPassword || !/^[A-Za-z]{2}$/.test(usageLocation)) return setError(res, 400, "A temporary password and two-letter usage location are required.");
+    try { return res.status(201).json({ ok: true, result: await provisionMappingTarget(user.openId, req.params.id, { temporaryPassword, usageLocation, workload: typeof req.body?.workload === "string" ? req.body.workload : "oneDrive" }) }); } catch (error) { return setError(res, 502, error instanceof Error ? error.message : "Target provisioning failed."); }
   });
 
   app.get("/api/workspace/identity-mapping/mappings.csv", async (req, res) => {

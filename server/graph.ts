@@ -143,3 +143,57 @@ export async function discoverGraphUsersForConnection(ownerOpenId: string, conne
   }
   return users.slice(0, limit);
 }
+
+export type TargetAccountReadiness = {
+  status: "ready" | "needs_license" | "blocked" | "missing";
+  detail: string;
+  targetUser?: GraphUser & { usageLocation?: string; userType?: string; assignedLicenses?: Array<{ skuId?: string }> };
+  assignedLicenseCount: number;
+  requiredLicense: string;
+};
+
+const workloadLicenseHints: Record<string, string> = {
+  oneDrive: "SharePoint/OneDrive eligible license (for example, SPO or M365 Business)",
+  sharePoint: "SharePoint Online eligible license",
+  exchange: "Exchange Online eligible license",
+  teams: "Microsoft Teams eligible license",
+};
+
+export function evaluateTargetAccountReadiness(user: GraphUser & { usageLocation?: string; userType?: string; assignedLicenses?: Array<{ skuId?: string }> }, workload = "oneDrive"): TargetAccountReadiness {
+  const licenseCount = user.assignedLicenses?.length ?? 0;
+  const requiredLicense = workloadLicenseHints[workload] ?? workloadLicenseHints.oneDrive;
+  if (user.accountEnabled === false) return { status: "blocked", detail: "Target account is disabled.", targetUser: user, assignedLicenseCount: licenseCount, requiredLicense };
+  if ((user.userType ?? "Member") !== "Member") return { status: "blocked", detail: `Target account is a ${user.userType ?? "non-member"}; customer approval is required before migration.`, targetUser: user, assignedLicenseCount: licenseCount, requiredLicense };
+  if (!user.usageLocation) return { status: "needs_license", detail: "Target account is missing usageLocation, so Microsoft licensing cannot be validated.", targetUser: user, assignedLicenseCount: licenseCount, requiredLicense };
+  if (licenseCount === 0) return { status: "needs_license", detail: `Target account has no assigned licenses. Assign ${requiredLicense} before approval.`, targetUser: user, assignedLicenseCount: licenseCount, requiredLicense };
+  return { status: "ready", detail: `Target account is enabled, has usageLocation ${user.usageLocation}, and has ${licenseCount} assigned license(s). Confirm the assigned SKU includes ${requiredLicense}.`, targetUser: user, assignedLicenseCount: licenseCount, requiredLicense };
+}
+
+export async function checkTargetAccountReadiness(ownerOpenId: string, connectionId: string, targetUserId: string, workload = "oneDrive"): Promise<TargetAccountReadiness> {
+  const connection = await getTenantConnection(ownerOpenId, connectionId);
+  if (!connection) throw new Error("Target tenant connection was not found.");
+  const user = await graphGetForConnection<GraphUser & { usageLocation?: string; userType?: string; assignedLicenses?: Array<{ skuId?: string }> }>(connection, `/users/${encodeURIComponent(targetUserId)}?$select=id,displayName,userPrincipalName,mail,accountEnabled,userType,usageLocation,assignedLicenses`);
+  return evaluateTargetAccountReadiness(user, workload);
+}
+
+export async function provisionTargetUser(ownerOpenId: string, connectionId: string, input: { userPrincipalName: string; displayName: string; mailNickname: string; usageLocation: string; temporaryPassword: string }) {
+  const connection = await getTenantConnection(ownerOpenId, connectionId);
+  if (!connection) throw new Error("Target tenant connection was not found.");
+  if (!input.temporaryPassword || input.temporaryPassword.length < 12) throw new Error("A temporary password of at least 12 characters is required for provisioning.");
+  return graphPostForConnection<{ id: string; userPrincipalName?: string; accountEnabled?: boolean }>(connection, "/users", {
+    accountEnabled: true,
+    displayName: input.displayName,
+    mailNickname: input.mailNickname,
+    userPrincipalName: input.userPrincipalName,
+    usageLocation: input.usageLocation.toUpperCase(),
+    passwordProfile: { forceChangePasswordNextSignIn: true, password: input.temporaryPassword },
+  });
+}
+
+async function graphPostForConnection<T>(connection: DynamicGraphConnection, path: string, body: unknown): Promise<T> {
+  const token = await getAppAccessTokenForConnection(connection);
+  if (!token) throw new Error("Tenant connection requires tenant ID, client ID, and client secret");
+  const response = await fetch(`https://graph.microsoft.com/v1.0${path}`, { method: "POST", headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(20_000) });
+  if (!response.ok) { const detail = await response.text().catch(() => ""); throw new Error(`Graph ${response.status}: ${detail.slice(0, 300)}`); }
+  return response.json() as Promise<T>;
+}

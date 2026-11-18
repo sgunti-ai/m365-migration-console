@@ -144,6 +144,12 @@ export const identityMappings = mysqlTable("identity_mappings", {
   collisionCode: varchar("collisionCode", { length: 96 }),
   explanation: text("explanation").notNull(),
   decision: varchar("decision", { length: 32 }).default("pending").notNull(),
+  readinessStatus: mysqlEnum("readinessStatus", ["unknown", "checking", "ready", "needs_license", "blocked", "missing"]).default("unknown").notNull(),
+  readinessDetail: text("readinessDetail"),
+  requiredLicense: varchar("requiredLicense", { length: 160 }),
+  assignedLicenseCount: int("assignedLicenseCount").default(0).notNull(),
+  readinessCheckedAt: timestamp("readinessCheckedAt"),
+  provisioningStatus: mysqlEnum("provisioningStatus", ["not_requested", "requested", "created", "failed"]).default("not_requested").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

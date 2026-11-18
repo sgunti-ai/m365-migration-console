@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "./db";
 import { identityMappingPolicies, identityMappings } from "../drizzle/schema";
-import { discoverGraphUsersForConnection, type GraphUser } from "./graph";
+import { checkTargetAccountReadiness, discoverGraphUsersForConnection, provisionTargetUser, type GraphUser } from "./graph";
 
 export type CollisionAction = "auto_map" | "review" | "block" | "skip";
 export type CollisionMatrix = {
@@ -117,9 +117,57 @@ export async function listMappings(ownerOpenId: string, policyId: string, status
 export async function updateMappingDecision(ownerOpenId: string, mappingId: string, decision: "approve" | "reject" | "block") {
   const db = await getDb();
   if (!db) throw new Error("A configured database is required for identity mapping.");
+  const existing = await db.select().from(identityMappings).where(and(eq(identityMappings.id, mappingId), eq(identityMappings.ownerOpenId, ownerOpenId))).limit(1);
+  if (!existing[0]) throw new Error("Identity mapping was not found.");
+  if (decision === "approve" && existing[0].readinessStatus !== "ready") throw new Error("Target account readiness must be verified as ready before approval.");
   const status = decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "blocked";
   await db.update(identityMappings).set({ status, decision }).where(and(eq(identityMappings.id, mappingId), eq(identityMappings.ownerOpenId, ownerOpenId)));
   return { ok: true, status };
+}
+
+export async function validateMappingTargetReadiness(ownerOpenId: string, mappingId: string, workload = "oneDrive") {
+  const db = await getDb();
+  if (!db) throw new Error("A configured database is required for identity mapping.");
+  const rows = await db.select().from(identityMappings).where(and(eq(identityMappings.id, mappingId), eq(identityMappings.ownerOpenId, ownerOpenId))).limit(1);
+  const mapping = rows[0];
+  if (!mapping) throw new Error("Identity mapping was not found.");
+  const policyRows = await db.select().from(identityMappingPolicies).where(and(eq(identityMappingPolicies.id, mapping.policyId), eq(identityMappingPolicies.ownerOpenId, ownerOpenId))).limit(1);
+  const policy = policyRows[0];
+  if (!policy) throw new Error("Identity mapping policy was not found.");
+  if (!mapping.targetUserId) {
+    await db.update(identityMappings).set({ readinessStatus: "missing", readinessDetail: "No target user is associated with this mapping.", readinessCheckedAt: new Date() }).where(eq(identityMappings.id, mappingId));
+    return { status: "missing" as const, detail: "No target user is associated with this mapping." };
+  }
+  await db.update(identityMappings).set({ readinessStatus: "checking", readinessCheckedAt: new Date() }).where(eq(identityMappings.id, mappingId));
+  const result = await checkTargetAccountReadiness(ownerOpenId, policy.targetConnectionId, mapping.targetUserId, workload);
+  await db.update(identityMappings).set({ readinessStatus: result.status, readinessDetail: result.detail, requiredLicense: result.requiredLicense, assignedLicenseCount: result.assignedLicenseCount, readinessCheckedAt: new Date() }).where(eq(identityMappings.id, mappingId));
+  return result;
+}
+
+export async function provisionMappingTarget(ownerOpenId: string, mappingId: string, input: { temporaryPassword: string; usageLocation: string; workload?: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("A configured database is required for identity mapping.");
+  const rows = await db.select().from(identityMappings).where(and(eq(identityMappings.id, mappingId), eq(identityMappings.ownerOpenId, ownerOpenId))).limit(1);
+  const mapping = rows[0];
+  if (!mapping) throw new Error("Identity mapping was not found.");
+  const policyRows = await db.select().from(identityMappingPolicies).where(and(eq(identityMappingPolicies.id, mapping.policyId), eq(identityMappingPolicies.ownerOpenId, ownerOpenId))).limit(1);
+  const policy = policyRows[0];
+  if (!policy) throw new Error("Identity mapping policy was not found.");
+  if (mapping.targetUserId) throw new Error("This mapping already has a target account; verify readiness instead of provisioning another account.");
+  const sourceIdentity = mapping.sourceUpn ?? mapping.sourceMail ?? undefined;
+  const local = localPart(sourceIdentity);
+  if (!local) throw new Error("A source UPN or mail is required to derive the target UPN.");
+  const userPrincipalName = `${local}@${policy.targetDomain}`;
+  await db.update(identityMappings).set({ provisioningStatus: "requested" }).where(eq(identityMappings.id, mappingId));
+  try {
+    const created = await provisionTargetUser(ownerOpenId, policy.targetConnectionId, { userPrincipalName, displayName: mapping.sourceUpn ?? mapping.sourceMail ?? local, mailNickname: local.replace(/[^a-z0-9._-]/gi, "").slice(0, 64) || `user-${mapping.sourceUserId.slice(0, 8)}`, usageLocation: input.usageLocation, temporaryPassword: input.temporaryPassword });
+    await db.update(identityMappings).set({ targetUserId: created.id, targetUpn: created.userPrincipalName ?? userPrincipalName, provisioningStatus: "created", readinessStatus: "unknown", readinessDetail: "Target account created. Run readiness validation before approval." }).where(eq(identityMappings.id, mappingId));
+    const readiness = await validateMappingTargetReadiness(ownerOpenId, mappingId, input.workload ?? "oneDrive");
+    return { created, readiness };
+  } catch (error) {
+    await db.update(identityMappings).set({ provisioningStatus: "failed", readinessStatus: "blocked", readinessDetail: error instanceof Error ? error.message : "Target provisioning failed." }).where(eq(identityMappings.id, mappingId));
+    throw error;
+  }
 }
 
 export function mappingsCsv(rows: Array<Record<string, unknown>>) {
