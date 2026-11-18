@@ -115,6 +115,39 @@ export const discoveryInventoryResources = mysqlTable("discovery_inventory_resou
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const identityMappingPolicies = mysqlTable("identity_mapping_policies", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  sourceConnectionId: varchar("sourceConnectionId", { length: 32 }).notNull(),
+  targetConnectionId: varchar("targetConnectionId", { length: 32 }).notNull(),
+  sourceDomain: varchar("sourceDomain", { length: 255 }).notNull(),
+  targetDomain: varchar("targetDomain", { length: 255 }).notNull(),
+  collisionMatrix: text("collisionMatrix").notNull(),
+  status: mysqlEnum("status", ["Draft", "Proposed", "Approved", "Blocked"]).default("Draft").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const identityMappings = mysqlTable("identity_mappings", {
+  id: varchar("id", { length: 32 }).primaryKey(),
+  policyId: varchar("policyId", { length: 32 }).notNull(),
+  ownerOpenId: varchar("ownerOpenId", { length: 128 }).notNull(),
+  sourceUserId: varchar("sourceUserId", { length: 255 }).notNull(),
+  sourceUpn: varchar("sourceUpn", { length: 320 }),
+  sourceMail: varchar("sourceMail", { length: 320 }),
+  targetUserId: varchar("targetUserId", { length: 255 }),
+  targetUpn: varchar("targetUpn", { length: 320 }),
+  targetMail: varchar("targetMail", { length: 320 }),
+  status: mysqlEnum("status", ["proposed", "approved", "rejected", "blocked", "needs_review", "unmapped"]).notNull(),
+  matchMethod: varchar("matchMethod", { length: 64 }).notNull(),
+  confidence: int("confidence").default(0).notNull(),
+  collisionCode: varchar("collisionCode", { length: 96 }),
+  explanation: text("explanation").notNull(),
+  decision: varchar("decision", { length: 32 }).default("pending").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 const migrationPhaseValues = ["Assessment", "Mapping", "Planning", "Pilot", "Migration", "Validation", "Cutover", "Completed"] as const;
 
 export const migrationProjects = mysqlTable("migration_projects", {

@@ -33,7 +33,14 @@ function connectivityCheck(health: GraphHealth[]): PreflightCheck {
   return { code: "TENANT_GRAPH_ACCESS", category: "Access", title: "Source and target Graph access", status: unconfigured ? "Blocked" : "Needs review", severity: unconfigured ? "Critical" : "High", detail: `${missing || "Tenant"} connection${missing?.includes(" and ") ? "s" : ""} is not healthy enough for a live run.`, recommendation: "Open Settings, configure encrypted tenant credentials, validate both connections, and rerun pre-flight.", retryable: true };
 }
 
-function identityCheck(job: MigrationJob): PreflightCheck {
+type IdentityReadiness = { hasPolicy: boolean; total: number; approved: number; unresolved: number };
+
+function identityCheck(job: MigrationJob, readiness?: IdentityReadiness): PreflightCheck {
+  if (readiness?.hasPolicy) {
+    return readiness.unresolved === 0 && readiness.total > 0
+      ? { code: "IDENTITY_MAPPING", category: "Identity", title: "Identity mapping coverage", status: "Passed", severity: "Low", detail: `${readiness.approved.toLocaleString()} of ${readiness.total.toLocaleString()} identities are approved or configured for automatic mapping.`, recommendation: "Keep the approved source-to-target mapping snapshot attached to the wave.", retryable: false }
+      : { code: "IDENTITY_MAPPING", category: "Identity", title: "Identity mapping coverage", status: "Needs review", severity: "High", detail: `${readiness.unresolved.toLocaleString()} of ${readiness.total.toLocaleString()} identities still require collision resolution or approval.`, recommendation: "Open Discovery & mapping, resolve every needs-review, unmapped, or blocked identity, then rerun pre-flight.", retryable: false };
+  }
   const mapped = /mapped|discovered|wave|department/i.test(job.scope);
   return mapped
     ? { code: "IDENTITY_MAPPING", category: "Identity", title: "Identity mapping coverage", status: "Passed", severity: "Low", detail: `The selected scope is ${job.scope.toLowerCase()} and is eligible for mapping validation.`, recommendation: "Keep the approved source-to-target mapping snapshot attached to the wave.", retryable: false }
@@ -61,8 +68,8 @@ function workloadCheck(job: MigrationJob): PreflightCheck[] {
   return [{ code: "TEAMS_STRUCTURE_SCOPE", category: "Scope", title: "Teams and channel scope", status: /team|channel|finance|engineering/i.test(job.scope) ? "Passed" : "Needs review", severity: "High", detail: "Teams, channels, owners, members, guests, apps, and associated SharePoint locations must be catalogued.", recommendation: "Approve the team catalog and record out-of-scope channels, apps, and content instead of silently omitting them.", retryable: false }, { code: "TEAMS_WORKLOAD_DEPENDENCIES", category: "Dependency", title: "Teams dependency order", status: "Needs review", severity: "High", detail: "Teams chats and meetings can depend on identity and mailbox readiness; channel files are stored in SharePoint.", recommendation: "Link the Exchange, SharePoint, and identity validation results to this job before cutover.", retryable: false }];
 }
 
-export function buildPreflightChecks(job: MigrationJob, health: GraphHealth[]): PreflightCheck[] {
-  return [connectivityCheck(health), identityCheck(job), batchCheck(job), ...workloadCheck(job)];
+export function buildPreflightChecks(job: MigrationJob, health: GraphHealth[], readiness?: IdentityReadiness): PreflightCheck[] {
+  return [connectivityCheck(health), identityCheck(job, readiness), batchCheck(job), ...workloadCheck(job)];
 }
 
 export function summarizePreflight(checks: PreflightCheck[]) {

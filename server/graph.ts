@@ -125,3 +125,21 @@ export async function discoverGraphUsers(tenant: GraphTenant, limit = 100) {
   const query = `/users?$select=id,displayName,userPrincipalName,mail,accountEnabled&$top=${Math.min(limit, 999)}`;
   return graphGet<{ value: Array<{ id: string; displayName?: string; userPrincipalName?: string; mail?: string; accountEnabled?: boolean }> }>(tenant, query);
 }
+
+export type GraphUser = { id: string; displayName?: string; userPrincipalName?: string; mail?: string; accountEnabled?: boolean };
+
+export async function discoverGraphUsersForConnection(ownerOpenId: string, connectionId: string, limit = 5000): Promise<GraphUser[]> {
+  const connection = await getTenantConnection(ownerOpenId, connectionId);
+  if (!connection) throw new Error("Tenant connection was not found.");
+  const users: GraphUser[] = [];
+  let path = "/users?$select=id,displayName,userPrincipalName,mail,accountEnabled&$top=999";
+  while (path && users.length < limit) {
+    const page = await graphGetForConnection<{ value?: GraphUser[]; "@odata.nextLink"?: string }>(connection, path);
+    users.push(...(page.value ?? []));
+    const next = page["@odata.nextLink"];
+    if (!next) break;
+    const url = new URL(next);
+    path = `${url.pathname.replace(/^\/v1\.0/, "")}${url.search}`;
+  }
+  return users.slice(0, limit);
+}

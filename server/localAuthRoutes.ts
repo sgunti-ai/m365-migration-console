@@ -9,6 +9,7 @@ import type { TenantWorkload } from "./tenantPermissionRules";
 import { createInventoryRun, discoveryCsv, latestDiscovery, latestInventory, runSourceDiscovery, subscribeInventoryProgress, testSourceDiscoveryConnection } from "./discovery";
 import { enqueueDiscoveryInventory, getWorkerTelemetry } from "./migrationWorker";
 import { loadInventorySettings, pageInventoryResources, persistInventorySettings } from "./discoveryPersistence";
+import { createMappingPolicy, listMappingPolicies, listMappings, mappingsCsv, updateMappingDecision, type CollisionAction } from "./identityMapping";
 
 const attempts = new Map<string, { count: number; resetAt: number }>();
 function clientIp(req: Request) { return String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim(); }
@@ -228,5 +229,50 @@ export function registerLocalAuthRoutes(app: Express) {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${assessment.tenantLabel.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-discovery-assessment.csv"`);
     return res.send(discoveryCsv(assessment));
+  });
+
+  app.post("/api/workspace/identity-mapping/policies", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const { sourceConnectionId, targetConnectionId, sourceDomain, targetDomain, collisionMatrix } = req.body ?? {};
+    if (typeof sourceConnectionId !== "string" || typeof targetConnectionId !== "string" || typeof sourceDomain !== "string" || typeof targetDomain !== "string" || !sourceDomain.includes(".") || !targetDomain.includes(".")) return setError(res, 400, "Source and target tenant connections plus valid source and target domains are required.");
+    const [source, target] = await Promise.all([getTenantConnection(user.openId, sourceConnectionId), getTenantConnection(user.openId, targetConnectionId)]);
+    if (!source || source.direction !== "source" || !target || target.direction !== "target") return setError(res, 400, "Choose one saved source connection and one saved target connection.");
+    try {
+      const allowed: CollisionAction[] = ["auto_map", "review", "block", "skip"];
+      const safeMatrix = collisionMatrix && typeof collisionMatrix === "object" ? Object.fromEntries(Object.entries(collisionMatrix).filter(([key, value]) => ["exactMatch", "domainRewrite", "targetDuplicate", "noTarget", "disabledTarget", "sourceDuplicate"].includes(key) && allowed.includes(value as CollisionAction))) : undefined;
+      return res.status(201).json({ ok: true, result: await createMappingPolicy(user.openId, { sourceConnectionId, targetConnectionId, sourceDomain: sourceDomain.trim(), targetDomain: targetDomain.trim(), collisionMatrix: safeMatrix }) });
+    } catch (error) { return setError(res, 502, error instanceof Error ? error.message : "Identity mapping proposal failed."); }
+  });
+
+  app.get("/api/workspace/identity-mapping/policies", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    return res.json({ ok: true, policies: await listMappingPolicies(user.openId) });
+  });
+
+  app.get("/api/workspace/identity-mapping/mappings", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const policyId = typeof req.query.policyId === "string" ? req.query.policyId : "";
+    if (!policyId) return setError(res, 400, "A mapping policy ID is required.");
+    return res.json({ ok: true, mappings: await listMappings(user.openId, policyId, typeof req.query.status === "string" ? req.query.status : undefined) });
+  });
+
+  app.post("/api/workspace/identity-mapping/mappings/:id/decision", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    if (!["approve", "reject", "block"].includes(req.body?.decision)) return setError(res, 400, "Decision must be approve, reject, or block.");
+    return res.json(await updateMappingDecision(user.openId, req.params.id, req.body.decision));
+  });
+
+  app.get("/api/workspace/identity-mapping/mappings.csv", async (req, res) => {
+    const user = await getLocalUserFromToken(tokenFrom(req));
+    if (!user) return setError(res, 401, "Not authenticated");
+    const policyId = typeof req.query.policyId === "string" ? req.query.policyId : "";
+    if (!policyId) return setError(res, 400, "A mapping policy ID is required.");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="identity-mappings-${policyId.toLowerCase()}.csv"`);
+    return res.send(mappingsCsv(await listMappings(user.openId, policyId)));
   });
 }

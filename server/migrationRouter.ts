@@ -10,6 +10,7 @@ import { buildPreflightChecks, summarizePreflight } from "./migrationPreflight";
 import { createRemediationItems, createValidation, getLatestValidation, getRemediationItem, listRemediationItems, updateRemediationItem } from "./migrationPreflightRepo";
 import { listTenantConnections } from "./localAuth";
 import { isThrottlingIncident } from "./migrationIncidentRules";
+import { getLatestMappingReadiness } from "./identityMapping";
 
 const workloads = z.enum(["OneDrive", "SharePoint", "Exchange", "Teams"]);
 const status = z.enum(["Queued", "Running", "Paused", "Completed", "Needs review", "Failed", "Cancelled"]);
@@ -82,7 +83,7 @@ export const migrationRouter = router({
         const connection = connections.find((item) => item.direction === direction);
         return connection ? checkGraphHealthForConnection(ctx.user.openId, connection.id) : checkGraphHealth(direction);
       }));
-      const checks = buildPreflightChecks(job, health);
+      const checks = buildPreflightChecks(job, health, await getLatestMappingReadiness(ctx.user.openId));
       const summary = summarizePreflight(checks);
       const validation = await createValidation({ id: `VAL-${nanoid(10).toUpperCase()}`, jobId: job.id, ownerOpenId: ctx.user.openId, workload: job.workload, status: summary.status, score: summary.score, checks: JSON.stringify(checks), startedAt, completedAt: new Date() });
       const existing = await listRemediationItems(ctx.user.openId, { jobId: job.id });

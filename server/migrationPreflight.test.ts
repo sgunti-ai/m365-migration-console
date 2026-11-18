@@ -70,4 +70,15 @@ describe("migration pre-flight rules", () => {
     expect(checks.find((check) => check.code === "BATCH_CONTROL")?.status).toBe("Needs review");
     expect(summary.needsReview).toBeGreaterThan(0);
   });
+
+  it("blocks the identity gate while collision decisions remain unresolved", () => {
+    const checks = buildPreflightChecks(job("OneDrive"), healthyTenants, { hasPolicy: true, total: 10, approved: 8, unresolved: 2 });
+    expect(checks.find((check) => check.code === "IDENTITY_MAPPING")?.status).toBe("Needs review");
+    expect(checks.find((check) => check.code === "IDENTITY_MAPPING")?.detail).toContain("2 of 10");
+  });
+
+  it("passes the identity gate after all policy mappings are approved", () => {
+    const checks = buildPreflightChecks(job("OneDrive"), healthyTenants, { hasPolicy: true, total: 10, approved: 10, unresolved: 0 });
+    expect(checks.find((check) => check.code === "IDENTITY_MAPPING")?.status).toBe("Passed");
+  });
 });
